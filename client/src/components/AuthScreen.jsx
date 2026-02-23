@@ -40,7 +40,7 @@ export default function AuthScreen({ onConnect }) {
 
             onConnect(accessToken, apiKey.trim())
         } catch (err) {
-            setError('Network error — is the proxy server running on port 4000?')
+            setError('Network error — Check your internet connection')
         } finally {
             setLoading(false)
         }

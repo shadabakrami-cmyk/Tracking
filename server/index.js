@@ -6,7 +6,11 @@ const fetch = require("node-fetch");
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-app.use(cors({ origin: "http://localhost:3000" }));
+app.use(cors({
+  origin: "https://oceantracking.netlify.app",
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  credentials: true
+}));
 app.use(express.json());
 
 // ─── Auth Token ────────────────────────────────────────────────────────────────
