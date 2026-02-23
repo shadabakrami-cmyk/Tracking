@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import DCSAView from './DCSAView'
 import { normalizeResponse } from '../utils/normalizeResponse'
 
-const API_URL = 'http://localhost:4000/api'
+const API_URL = 'https://tracking-bgr2.onrender.com/api'
 
 const TABS = [
     { key: 'bl', label: 'Bill of Lading', placeholder: 'Enter Bill of Lading number' },

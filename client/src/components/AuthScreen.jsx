@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-const API_URL = 'http://localhost:4000/api'
+const API_URL = 'https://tracking-bgr2.onrender.com/api'
 
 export default function AuthScreen({ onConnect }) {
     const [userId, setUserId] = useState('')
