@@ -200,7 +200,7 @@ function getModeIcon(mode) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function DCSAView({ data, selectedIndex, onSelectEvent, containerFilter = null, onVesselClick }) {
+export default function DCSAView({ data, selectedIndex, onSelectEvent, containerFilter = null }) {
     const parsed = normalizeResponse(data, containerFilter)
 
     if (parsed.totalEvents === 0) {
@@ -416,35 +416,16 @@ export default function DCSAView({ data, selectedIndex, onSelectEvent, container
                                 )}
 
                                 {/* Vessel + Mode */}
-                                {(vesselName || voyage || mode) && (() => {
-                                    // Extract transport ID from raw event data for vessel click
-                                    const rawTransportId = event._raw?.transportId || event._raw?.transport_id || event._raw?.transportCall?.transportId || null
-                                    return (
-                                        <div className="flex items-center gap-1.5 text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                                            {ModeIcon && <ModeIcon />}
-                                            <span>
-                                                {mode && <span>{mode}</span>}
-                                                {vesselName && (
-                                                    onVesselClick && rawTransportId ? (
-                                                        <span
-                                                            onClick={(e) => { e.stopPropagation(); onVesselClick(rawTransportId) }}
-                                                            style={{
-                                                                color: 'var(--accent-cyan, #0891b2)', fontWeight: 600,
-                                                                cursor: 'pointer', transition: 'all 0.2s',
-                                                                textDecoration: 'none',
-                                                            }}
-                                                            onMouseEnter={e => e.currentTarget.style.textDecoration = 'underline'}
-                                                            onMouseLeave={e => e.currentTarget.style.textDecoration = 'none'}
-                                                        >{mode ? ' — ' : ''}{vesselName}</span>
-                                                    ) : (
-                                                        <span style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>{mode ? ' — ' : ''}{vesselName}</span>
-                                                    )
-                                                )}
-                                                {voyage && <span style={{ color: 'var(--text-muted)' }}> / Voyage {voyage}</span>}
-                                            </span>
-                                        </div>
-                                    )
-                                })()}
+                                {(vesselName || voyage || mode) && (
+                                    <div className="flex items-center gap-1.5 text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                                        {ModeIcon && <ModeIcon />}
+                                        <span>
+                                            {mode && <span>{mode}</span>}
+                                            {vesselName && <span style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>{mode ? ' — ' : ''}{vesselName}</span>}
+                                            {voyage && <span style={{ color: 'var(--text-muted)' }}> / Voyage {voyage}</span>}
+                                        </span>
+                                    </div>
+                                )}
 
                                 {/* Equipment info */}
                                 {event.equipmentReference && (

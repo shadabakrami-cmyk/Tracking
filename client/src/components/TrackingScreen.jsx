@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import DCSAView from './DCSAView'
-import VesselDrawer from './VesselDrawer'
+import VesselWidget from './VesselWidget'
 import { normalizeResponse } from '../utils/normalizeResponse'
 
 const API_URL = 'https://tracking-bgr2.onrender.com/api'
@@ -18,11 +18,7 @@ export default function TrackingScreen({ auth, onDisconnect }) {
     const [error, setError] = useState('')
     const [result, setResult] = useState(null)
     const [selectedEventIndex, setSelectedEventIndex] = useState(null)
-    const [selectedContainer, setSelectedContainer] = useState(null) // null = all containers
-
-    // Vessel Drawer state
-    const [vesselDrawerOpen, setVesselDrawerOpen] = useState(false)
-    const [vesselTransportId, setVesselTransportId] = useState(null)
+    const [selectedContainer, setSelectedContainer] = useState(null)
 
     const rawJsonRef = useRef(null)
 
@@ -87,16 +83,9 @@ export default function TrackingScreen({ auth, onDisconnect }) {
         }
     }
 
-    // Vessel drawer handler
-    const handleVesselClick = (transportId) => {
-        setVesselTransportId(transportId)
-        setVesselDrawerOpen(true)
-    }
-
     // Find the event_id of the selected normalized event in the original JSON
     function findEventIdForIndex(idx) {
         if (idx === null || !rawEvents[idx]) return null
-        // _raw is camelCase — get eventId
         const raw = rawEvents[idx]._raw
         return raw?.eventId || null
     }
@@ -128,18 +117,15 @@ export default function TrackingScreen({ auth, onDisconnect }) {
             return <pre style={preStyle}>{fullJson}</pre>
         }
 
-        // Find the event block in the original JSON by searching for its event_id
         const idMarker = `"event_id": "${eventId}"`
         const idPos = fullJson.indexOf(idMarker)
         if (idPos === -1) {
             return <pre style={preStyle}>{fullJson}</pre>
         }
 
-        // Walk backwards from idPos to find the opening { of this event object
         let braceStart = idPos
         while (braceStart > 0 && fullJson[braceStart] !== '{') braceStart--
 
-        // Walk forward to find the matching closing } by counting braces
         let depth = 0
         let braceEnd = braceStart
         for (let i = braceStart; i < fullJson.length; i++) {
@@ -235,7 +221,7 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                         ))}
                     </div>
 
-                    {/* Input + Button (inline) */}
+                    {/* Input + Button */}
                     <form onSubmit={handleTrack} className="flex gap-3">
                         <div className="flex-1 relative">
                             <span className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }}>
@@ -295,7 +281,7 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                         </div>
                     )}
 
-                    {/* Container Dropdown — only for BL/booking with multiple containers */}
+                    {/* Container Dropdown */}
                     {result && containerList.length > 1 && (activeTab === 'bl' || activeTab === 'booking') && (
                         <div className="mt-4" style={{ animation: 'slideUp 0.3s ease-out' }}>
                             <div className="relative">
@@ -324,7 +310,6 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                                         </option>
                                     ))}
                                 </select>
-                                {/* Custom dropdown arrow */}
                                 <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--text-muted)' }}>
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                         <polyline points="6 9 12 15 18 9" />
@@ -336,10 +321,10 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                 </div>
             </div>
 
-            {/* Results Section — two scrollable panels */}
+            {/* Results Section */}
             {result && (
                 <div className="flex max-w-7xl mx-auto w-full" style={{ animation: 'fadeIn 0.4s ease-out', height: '100vh' }}>
-                    {/* Left: DCSA View — scrollable box */}
+                    {/* Left: DCSA View */}
                     <div className="flex-1 flex flex-col min-h-0" style={{ borderRight: '1px solid var(--border-glass)' }}>
                         <div className="px-6 pt-4 pb-2 shrink-0">
                             <h2 className="text-xs font-semibold uppercase tracking-wider"
@@ -353,12 +338,11 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                                 selectedIndex={selectedEventIndex}
                                 onSelectEvent={setSelectedEventIndex}
                                 containerFilter={selectedContainer}
-                                onVesselClick={handleVesselClick}
                             />
                         </div>
                     </div>
 
-                    {/* Right: Raw JSON — scrollable box */}
+                    {/* Right: Raw JSON */}
                     <div className="flex-1 flex flex-col min-h-0">
                         <div className="px-6 pt-4 pb-2 shrink-0 flex items-center justify-between">
                             <h2 className="text-xs font-semibold uppercase tracking-wider"
@@ -384,13 +368,8 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                 </div>
             )}
 
-            {/* Vessel Journey Drawer */}
-            <VesselDrawer
-                open={vesselDrawerOpen}
-                onClose={() => setVesselDrawerOpen(false)}
-                transportId={vesselTransportId}
-                auth={auth}
-            />
+            {/* Floating Vessel Widget */}
+            <VesselWidget auth={auth} />
         </div>
     )
 }
