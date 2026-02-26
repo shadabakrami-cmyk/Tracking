@@ -84,6 +84,34 @@ app.get("/api/track", async (req, res) => {
   }
 });
 
+// ─── Vessel Track ──────────────────────────────────────────────────────────────
+app.get("/api/vessel-track", async (req, res) => {
+  const { id, token, apiKey } = req.query;
+
+  if (!id || !token || !apiKey) {
+    return res.status(400).json({ error: "id, token, and apiKey are required." });
+  }
+
+  try {
+    const upstream = await fetch(
+      `https://api.oceanio.com/transports/${encodeURIComponent(id)}/transport_tracks`,
+      {
+        headers: {
+          accept: "application/json",
+          Authorization: `Bearer ${token}`,
+          "x-api-key": apiKey,
+        },
+      }
+    );
+
+    const data = await upstream.json();
+    return res.status(upstream.status).json(data);
+  } catch (err) {
+    console.error("Vessel Track proxy error:", err.message);
+    return res.status(502).json({ error: "Failed to reach Oceanio vessel track endpoint." });
+  }
+});
+
 // ─── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`Oceanio proxy server running on http://localhost:${PORT}`);

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import DCSAView from './DCSAView'
+import VesselDrawer from './VesselDrawer'
 import { normalizeResponse } from '../utils/normalizeResponse'
 
 const API_URL = 'https://tracking-bgr2.onrender.com/api'
@@ -17,16 +18,27 @@ export default function TrackingScreen({ auth, onDisconnect }) {
     const [error, setError] = useState('')
     const [result, setResult] = useState(null)
     const [selectedEventIndex, setSelectedEventIndex] = useState(null)
+    const [selectedContainer, setSelectedContainer] = useState(null) // null = all containers
+
+    // Vessel Drawer state
+    const [vesselDrawerOpen, setVesselDrawerOpen] = useState(false)
+    const [vesselTransportId, setVesselTransportId] = useState(null)
 
     const rawJsonRef = useRef(null)
 
     const currentTab = TABS.find((t) => t.key === activeTab)
 
+    // Extract container list from response (for BL/booking)
+    const containerList = useMemo(() => {
+        if (!result) return []
+        return normalizeResponse(result).containers
+    }, [result])
+
     // Pre-compute the raw events for JSON highlighting
     const rawEvents = useMemo(() => {
         if (!result) return []
-        return normalizeResponse(result).allEvents
-    }, [result])
+        return normalizeResponse(result, selectedContainer).allEvents
+    }, [result, selectedContainer])
 
     // Scroll the raw JSON panel to the highlighted event
     useEffect(() => {
@@ -42,6 +54,7 @@ export default function TrackingScreen({ auth, onDisconnect }) {
         setError('')
         setResult(null)
         setSelectedEventIndex(null)
+        setSelectedContainer(null)
 
         const trimmed = reference.trim()
         if (!trimmed) {
@@ -72,6 +85,12 @@ export default function TrackingScreen({ auth, onDisconnect }) {
         } finally {
             setLoading(false)
         }
+    }
+
+    // Vessel drawer handler
+    const handleVesselClick = (transportId) => {
+        setVesselTransportId(transportId)
+        setVesselDrawerOpen(true)
     }
 
     // Find the event_id of the selected normalized event in the original JSON
@@ -202,6 +221,7 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                                     setError('')
                                     setResult(null)
                                     setSelectedEventIndex(null)
+                                    setSelectedContainer(null)
                                 }}
                                 className="flex-1 py-2 text-sm font-medium rounded-lg transition-all duration-300 cursor-pointer"
                                 style={{
@@ -274,6 +294,45 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                             {error}
                         </div>
                     )}
+
+                    {/* Container Dropdown — only for BL/booking with multiple containers */}
+                    {result && containerList.length > 1 && (activeTab === 'bl' || activeTab === 'booking') && (
+                        <div className="mt-4" style={{ animation: 'slideUp 0.3s ease-out' }}>
+                            <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--text-muted)' }}>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <rect x="1" y="4" width="22" height="14" rx="2" /><path d="M1 10h22" />
+                                    </svg>
+                                </span>
+                                <select
+                                    value={selectedContainer || ''}
+                                    onChange={(e) => { setSelectedContainer(e.target.value || null); setSelectedEventIndex(null); }}
+                                    className="pl-10 pr-10 py-2 rounded-xl text-sm transition-all duration-200 outline-none cursor-pointer appearance-none"
+                                    style={{
+                                        background: 'rgba(255,255,255,0.9)',
+                                        border: '1px solid var(--border-glass)',
+                                        color: 'var(--text-primary)',
+                                        minWidth: '280px',
+                                    }}
+                                    onFocus={(e) => { e.target.style.borderColor = 'rgba(59,130,246,0.5)'; e.target.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)'; }}
+                                    onBlur={(e) => { e.target.style.borderColor = 'var(--border-glass)'; e.target.style.boxShadow = 'none'; }}
+                                >
+                                    <option value="">All Containers ({containerList.reduce((sum, c) => sum + c.eventCount, 0)} events)</option>
+                                    {containerList.map((c) => (
+                                        <option key={c.equipmentReference} value={c.equipmentReference}>
+                                            {c.equipmentReference}  —  {c.eventCount} events{c.latestStatus ? `  ·  ${c.latestStatus}` : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                                {/* Custom dropdown arrow */}
+                                <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--text-muted)' }}>
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="6 9 12 15 18 9" />
+                                    </svg>
+                                </span>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
 
@@ -293,6 +352,8 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                                 data={result}
                                 selectedIndex={selectedEventIndex}
                                 onSelectEvent={setSelectedEventIndex}
+                                containerFilter={selectedContainer}
+                                onVesselClick={handleVesselClick}
                             />
                         </div>
                     </div>
@@ -322,6 +383,14 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                     </div>
                 </div>
             )}
+
+            {/* Vessel Journey Drawer */}
+            <VesselDrawer
+                open={vesselDrawerOpen}
+                onClose={() => setVesselDrawerOpen(false)}
+                transportId={vesselTransportId}
+                auth={auth}
+            />
         </div>
     )
 }
