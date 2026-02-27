@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { MapContainer, TileLayer, Polyline, CircleMarker, Marker, Popup, useMap } from 'react-leaflet'
+import { douglasPeucker, bearing, segmentVoyage, getSegmentColor } from '../utils/mapHelpers'
 
 const API_URL = 'https://tracking-bgr2.onrender.com/api'
 
@@ -48,6 +49,11 @@ export default function VesselSection({ auth }) {
     const [timelineOpen, setTimelineOpen] = useState(true)
     const [rawJsonOpen, setRawJsonOpen] = useState(false)
     const [focusedPort, setFocusedPort] = useState(null)
+    const [highlightSegment, setHighlightSegment] = useState(null)
+    const [playing, setPlaying] = useState(false)
+    const [playSpeed, setPlaySpeed] = useState(1)
+    const [timeCursor, setTimeCursor] = useState(1)  // 0-1 ratio
+    const playRef = useRef(null)
 
     const mapRef = useRef(null)
 
@@ -95,8 +101,45 @@ export default function VesselSection({ auth }) {
     const origin = useMemo(() => findPortByCode(portcalls, leg?.pol_un_location_code), [portcalls, leg])
     const destination = useMemo(() => findPortByCode(portcalls, leg?.pod_un_location_code), [portcalls, leg])
 
+    // ── Voyage segments (port-to-port) ──
+    const voyageSegments = useMemo(() => segmentVoyage(historicPositions, portcalls), [historicPositions, portcalls])
+
+    // ── Time range for playback ──
+    const timeRange = useMemo(() => {
+        const allDated = positions.filter(p => p.position_datetime && p.tag !== 'predicted')
+        if (!allDated.length) return { min: 0, max: 0 }
+        const times = allDated.map(p => new Date(p.position_datetime).getTime())
+        return { min: Math.min(...times), max: Math.max(...times) }
+    }, [positions])
+
+    const timeCutoff = useMemo(() => {
+        if (!timeRange.max) return Infinity
+        return timeRange.min + (timeRange.max - timeRange.min) * timeCursor
+    }, [timeRange, timeCursor])
+
+    // ── Playback animation ──
+    useEffect(() => {
+        if (playing) {
+            playRef.current = setInterval(() => {
+                setTimeCursor(prev => {
+                    const next = prev + 0.003 * playSpeed
+                    if (next >= 1) { setPlaying(false); return 1 }
+                    return next
+                })
+            }, 30)
+        } else {
+            clearInterval(playRef.current)
+        }
+        return () => clearInterval(playRef.current)
+    }, [playing, playSpeed])
+
+    // Reset playback when leg changes
+    useEffect(() => { setTimeCursor(1); setPlaying(false); setHighlightSegment(null) }, [activeLeg])
+
     const flyToPort = useCallback((pc, idx) => {
         setFocusedPort(idx)
+        // Highlight the segment departing from this port
+        setHighlightSegment(prev => prev === idx ? null : idx)
         if (mapRef.current && pc.latitude && pc.longitude) {
             mapRef.current.flyTo([pc.latitude, pc.longitude], 10, { duration: 1 })
         }
@@ -466,29 +509,70 @@ export default function VesselSection({ auth }) {
 
                                 <FitBoundsHelper positions={positions} portcalls={portcalls} />
 
-                                {/* Historic polyline (cyan) */}
-                                {(() => {
-                                    const coords = historicPositions.map(p => [p.latitude, p.longitude])
-                                    if (latestPosition) coords.push([latestPosition.latitude, latestPosition.longitude])
-                                    return coords.length > 1 ? (
-                                        <Polyline positions={coords} pathOptions={{ color: '#06b6d4', weight: 3.5, opacity: 0.9 }} />
-                                    ) : null
-                                })()}
+                                {/* ── Segmented + Simplified + Directional Historic Route ── */}
+                                {voyageSegments.map((seg, si) => {
+                                    const color = getSegmentColor(si)
+                                    // Time-filter the positions
+                                    const filtered = seg.positions.filter(p => {
+                                        if (!p.position_datetime) return true
+                                        return new Date(p.position_datetime).getTime() <= timeCutoff
+                                    })
+                                    if (filtered.length < 2) return null
+                                    // Douglas-Peucker simplification
+                                    const rawCoords = filtered.map(p => [p.latitude, p.longitude])
+                                    const simplified = douglasPeucker(rawCoords, 0.005)
+                                    // Opacity: full if no highlight or this is highlighted, dimmed otherwise
+                                    const opacity = highlightSegment === null || highlightSegment === si ? 0.9 : 0.15
+                                    const weight = highlightSegment === si ? 4.5 : 3.5
+                                    return (
+                                        <span key={`seg-${si}`}>
+                                            <Polyline positions={simplified} pathOptions={{ color, weight, opacity }} />
+                                            {/* Directional arrows every ~8th point */}
+                                            {simplified.filter((_, i) => i > 0 && i % 8 === 0).map((coord, ai) => {
+                                                const prev = simplified[Math.max(0, (ai + 1) * 8 - 1)]
+                                                const angle = bearing(prev[0], prev[1], coord[0], coord[1])
+                                                return (
+                                                    <Marker key={`arr-${si}-${ai}`}
+                                                        position={coord}
+                                                        icon={L.divIcon({
+                                                            className: '',
+                                                            html: `<svg width="14" height="14" viewBox="0 0 24 24" style="transform:rotate(${angle}deg);opacity:${opacity}" fill="${color}" xmlns="http://www.w3.org/2000/svg"><path d="M12 2l8 18H4z"/></svg>`,
+                                                            iconSize: [14, 14], iconAnchor: [7, 7],
+                                                        })}
+                                                    />
+                                                )
+                                            })}
+                                        </span>
+                                    )
+                                })}
 
-                                {/* Historic dots (every 5th) */}
-                                {historicPositions.filter((_, i) => i % 5 === 0).map((p, i) => (
-                                    <CircleMarker key={`h-${i}`} center={[p.latitude, p.longitude]}
-                                        radius={2.5} pathOptions={{ fillColor: '#06b6d4', fillOpacity: 0.6, color: '#06b6d4', weight: 0.5, opacity: 0.4 }} />
-                                ))}
-
-                                {/* Predicted polyline (amber dashed) */}
+                                {/* Predicted polyline (amber dashed) — also time-filtered */}
                                 {(() => {
+                                    if (timeCursor < 1) return null  // Hide predicted while scrubbing
                                     const coords = []
                                     if (latestPosition) coords.push([latestPosition.latitude, latestPosition.longitude])
                                     predictedPositions.forEach(p => coords.push([p.latitude, p.longitude]))
-                                    return coords.length > 1 ? (
-                                        <Polyline positions={coords} pathOptions={{ color: '#f59e0b', weight: 3, opacity: 0.7, dashArray: '10 6' }} />
-                                    ) : null
+                                    if (coords.length < 2) return null
+                                    const simplified = douglasPeucker(coords, 0.005)
+                                    return (
+                                        <>
+                                            <Polyline positions={simplified} pathOptions={{ color: '#f59e0b', weight: 3, opacity: 0.7, dashArray: '10 6' }} />
+                                            {simplified.filter((_, i) => i > 0 && i % 6 === 0).map((coord, ai) => {
+                                                const prev = simplified[Math.max(0, (ai + 1) * 6 - 1)]
+                                                const angle = bearing(prev[0], prev[1], coord[0], coord[1])
+                                                return (
+                                                    <Marker key={`parr-${ai}`}
+                                                        position={coord}
+                                                        icon={L.divIcon({
+                                                            className: '',
+                                                            html: `<svg width="12" height="12" viewBox="0 0 24 24" style="transform:rotate(${angle}deg);opacity:0.6" fill="#f59e0b" xmlns="http://www.w3.org/2000/svg"><path d="M12 2l8 18H4z"/></svg>`,
+                                                            iconSize: [12, 12], iconAnchor: [6, 6],
+                                                        })}
+                                                    />
+                                                )
+                                            })}
+                                        </>
+                                    )
                                 })()}
 
                                 {/* Latest position (green dot) */}
@@ -643,6 +727,102 @@ export default function VesselSection({ auth }) {
                             )}
                         </div>
                     </div>
+
+                    {/* ─── Time-Series Playback Slider ─── */}
+                    {timeRange.max > 0 && (
+                        <div className="shrink-0" style={{
+                            borderTop: '1px solid var(--border-glass)',
+                            background: 'rgba(248,250,252,0.8)',
+                            padding: '10px 24px',
+                        }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                {/* Play / Pause */}
+                                <button onClick={() => {
+                                    if (timeCursor >= 1) setTimeCursor(0)
+                                    setPlaying(v => !v)
+                                }} style={{
+                                    width: '30px', height: '30px', borderRadius: '8px',
+                                    background: playing ? 'rgba(239,68,68,0.1)' : 'var(--gradient-brand)',
+                                    border: playing ? '1px solid rgba(239,68,68,0.2)' : 'none',
+                                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    color: playing ? '#ef4444' : '#fff', flexShrink: 0,
+                                    boxShadow: playing ? 'none' : '0 2px 8px rgba(59,130,246,0.3)',
+                                }}>
+                                    {playing ? (
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+                                    ) : (
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21" /></svg>
+                                    )}
+                                </button>
+
+                                {/* Reset */}
+                                <button onClick={() => { setTimeCursor(0); setPlaying(false) }} title="Reset" style={{
+                                    width: '28px', height: '28px', borderRadius: '7px',
+                                    background: 'rgba(0,0,0,0.04)', border: '1px solid var(--border-glass)',
+                                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    color: 'var(--text-muted)', flexShrink: 0,
+                                }}>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
+                                </button>
+
+                                {/* Speed toggle */}
+                                <button onClick={() => setPlaySpeed(s => s === 1 ? 3 : s === 3 ? 6 : 1)} style={{
+                                    padding: '3px 10px', borderRadius: '6px', fontSize: '10px', fontWeight: 700,
+                                    background: playSpeed > 1 ? 'rgba(59,130,246,0.08)' : 'rgba(0,0,0,0.04)',
+                                    border: `1px solid ${playSpeed > 1 ? 'rgba(59,130,246,0.3)' : 'var(--border-glass)'}`,
+                                    color: playSpeed > 1 ? '#3b82f6' : 'var(--text-muted)',
+                                    cursor: 'pointer', flexShrink: 0,
+                                }}>
+                                    {playSpeed}×
+                                </button>
+
+                                {/* Slider */}
+                                <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <span style={{ fontSize: '9px', color: 'var(--text-muted)', fontWeight: 600, whiteSpace: 'nowrap', fontFamily: "'IBM Plex Mono', monospace" }}>
+                                        {fmtDate(new Date(timeRange.min).toISOString())?.split(',')[0] || ''}
+                                    </span>
+                                    <input
+                                        type="range" min="0" max="1" step="0.001"
+                                        value={timeCursor}
+                                        onChange={e => { setTimeCursor(parseFloat(e.target.value)); setPlaying(false) }}
+                                        style={{
+                                            flex: 1, height: '6px',
+                                            WebkitAppearance: 'none', appearance: 'none',
+                                            borderRadius: '3px',
+                                            background: `linear-gradient(to right, #3b82f6 0%, #06b6d4 ${timeCursor * 100}%, #e2e8f0 ${timeCursor * 100}%)`,
+                                            outline: 'none', cursor: 'pointer',
+                                        }}
+                                    />
+                                    <span style={{ fontSize: '9px', color: 'var(--text-muted)', fontWeight: 600, whiteSpace: 'nowrap', fontFamily: "'IBM Plex Mono', monospace" }}>
+                                        {fmtDate(new Date(timeRange.max).toISOString())?.split(',')[0] || ''}
+                                    </span>
+                                </div>
+
+                                {/* Current date label */}
+                                <div style={{
+                                    padding: '3px 10px', borderRadius: '6px',
+                                    background: 'rgba(59,130,246,0.08)',
+                                    border: '1px solid rgba(59,130,246,0.15)',
+                                    fontSize: '10px', fontWeight: 700, color: '#3b82f6',
+                                    fontFamily: "'IBM Plex Mono', monospace",
+                                    whiteSpace: 'nowrap', flexShrink: 0,
+                                }}>
+                                    {fmtDate(new Date(timeCutoff).toISOString()) || '—'}
+                                </div>
+
+                                {/* Show all / clear segment */}
+                                {highlightSegment !== null && (
+                                    <button onClick={() => setHighlightSegment(null)} style={{
+                                        padding: '3px 10px', borderRadius: '6px', fontSize: '10px', fontWeight: 600,
+                                        background: 'rgba(0,0,0,0.04)', border: '1px solid var(--border-glass)',
+                                        color: 'var(--text-muted)', cursor: 'pointer', flexShrink: 0,
+                                    }}>
+                                        Show All
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    )}
 
                     {/* ─── 4. Collapsible Vessel Details ─── */}
                     <div className="shrink-0" style={{ borderTop: '1px solid var(--border-glass)', background: 'rgba(255,255,255,0.55)' }}>
