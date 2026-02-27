@@ -24,9 +24,16 @@ function stateLabel(s) {
     return { text: s || '—', color: 'var(--text-muted)', bg: 'rgba(0,0,0,0.04)', border: 'var(--border-glass)' }
 }
 
-function portLabel(code, name) {
-    if (name && code) return `${name} (${code})`
-    return name || code || '—'
+/** Get the earliest meaningful timestamp from a portcall for sorting */
+function getPortcallSortDate(pc) {
+    const d = pc.ata_datetime || pc.atd_datetime || pc.eta_datetime || pc.sta_datetime || pc.etd_datetime || pc.std_datetime
+    return d ? new Date(d).getTime() : Infinity
+}
+
+/** Find the portcall whose un_location_code matches the given code */
+function findPortByCode(portcalls, code) {
+    if (!code || !portcalls.length) return null
+    return portcalls.find(pc => pc.un_location_code === code) || null
 }
 
 // ─── Component ──────────────────────────────────────────────────────────────────
@@ -38,10 +45,12 @@ export default function VesselSection({ auth }) {
     const [data, setData] = useState(null)
     const [activeLeg, setActiveLeg] = useState(0)
     const [vesselDetailsOpen, setVesselDetailsOpen] = useState(false)
+    const [timelineOpen, setTimelineOpen] = useState(true)
+    const [rawJsonOpen, setRawJsonOpen] = useState(false)
+    const [focusedPort, setFocusedPort] = useState(null)
 
-
-    // ── flyToPort ref for the map ──
     const mapRef = useRef(null)
+
     const handleFetch = async (e) => {
         e.preventDefault()
         const trimmed = transportId.trim()
@@ -51,6 +60,8 @@ export default function VesselSection({ auth }) {
         setData(null)
         setActiveLeg(0)
         setVesselDetailsOpen(false)
+        setRawJsonOpen(false)
+        setFocusedPort(null)
         try {
             const res = await fetch(
                 `${API_URL}/vessel-track?id=${trimmed}&token=${auth.token}&apiKey=${auth.apiKey}`
@@ -68,23 +79,28 @@ export default function VesselSection({ auth }) {
     const legs = data?.transport_tracks || []
     const leg = legs[activeLeg] || null
     const vessel = leg?.vessel || {}
-    const portcalls = leg?.portcalls || []
     const positions = leg?.positions || []
+
+    // Sort portcalls chronologically
+    const portcalls = useMemo(() => {
+        const raw = leg?.portcalls || []
+        return [...raw].sort((a, b) => getPortcallSortDate(a) - getPortcallSortDate(b))
+    }, [leg])
 
     const historicPositions = useMemo(() => positions.filter(p => p.tag === 'historic'), [positions])
     const predictedPositions = useMemo(() => positions.filter(p => p.tag === 'predicted'), [positions])
     const latestPosition = useMemo(() => positions.find(p => p.tag === 'latest') || null, [positions])
 
-    // ── Fly to port ──
-    const flyToPort = useCallback((pc) => {
+    // ── Correct origin / destination lookup by UN location code ──
+    const origin = useMemo(() => findPortByCode(portcalls, leg?.pol_un_location_code), [portcalls, leg])
+    const destination = useMemo(() => findPortByCode(portcalls, leg?.pod_un_location_code), [portcalls, leg])
+
+    const flyToPort = useCallback((pc, idx) => {
+        setFocusedPort(idx)
         if (mapRef.current && pc.latitude && pc.longitude) {
             mapRef.current.flyTo([pc.latitude, pc.longitude], 10, { duration: 1 })
         }
     }, [])
-
-    // ── Origin / Destination labels ──
-    const origin = portcalls.length > 0 ? portcalls[0] : null
-    const destination = portcalls.length > 1 ? portcalls[portcalls.length - 1] : null
 
     return (
         <div className="flex-1 flex flex-col min-h-0" style={{ animation: 'fadeIn 0.4s ease-out' }}>
@@ -168,11 +184,11 @@ export default function VesselSection({ auth }) {
                     {/* ─── 1. Summary Card ─── */}
                     <div className="shrink-0" style={{ background: 'rgba(255,255,255,0.55)', borderBottom: '1px solid var(--border-glass)' }}>
                         <div className="max-w-6xl mx-auto px-6 py-4">
-                            {/* Leg switcher (if multi-leg) */}
+                            {/* Leg switcher */}
                             {legs.length > 1 && (
                                 <div className="flex gap-1.5 mb-3 flex-wrap">
                                     {legs.map((l, i) => (
-                                        <button key={i} onClick={() => setActiveLeg(i)} className="transition-all duration-200 cursor-pointer" style={{
+                                        <button key={i} onClick={() => { setActiveLeg(i); setFocusedPort(null) }} className="transition-all duration-200 cursor-pointer" style={{
                                             padding: '4px 12px', borderRadius: '8px', fontSize: '11px', fontWeight: 600,
                                             border: `1px solid ${activeLeg === i ? 'rgba(59,130,246,0.4)' : 'var(--border-glass)'}`,
                                             background: activeLeg === i ? 'rgba(59,130,246,0.08)' : 'transparent',
@@ -188,6 +204,7 @@ export default function VesselSection({ auth }) {
                                 {/* Status Badge */}
                                 {(() => {
                                     const st = stateLabel(leg.state)
+                                    const isTransit = leg.state === 'ONGOING'
                                     return (
                                         <span style={{
                                             padding: '5px 14px', borderRadius: '20px',
@@ -195,6 +212,7 @@ export default function VesselSection({ auth }) {
                                             background: st.bg, color: st.color,
                                             border: `1px solid ${st.border}`,
                                             letterSpacing: '0.02em',
+                                            animation: isTransit ? 'pulse-glow 2s ease-in-out infinite' : 'none',
                                         }}>{st.text}</span>
                                     )
                                 })()}
@@ -212,19 +230,25 @@ export default function VesselSection({ auth }) {
                                     )}
                                 </div>
 
-                                {/* Route: Origin → Destination */}
+                                {/* Route: Origin → Destination (matched by pol/pod code) */}
                                 <div className="flex items-center gap-2 ml-auto" style={{ fontSize: '14px', color: 'var(--text-primary)' }}>
                                     <div className="text-right">
                                         <div style={{ fontWeight: 700 }}>{origin?.port_name || leg.pol_un_location_code || '—'}</div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500 }}>{leg.pol_un_location_code || ''}</div>
                                     </div>
                                     <div style={{
-                                        display: 'flex', alignItems: 'center', gap: '4px',
+                                        display: 'flex', alignItems: 'center', gap: '3px',
                                         color: 'var(--accent-blue)', fontWeight: 700, fontSize: '16px',
-                                        padding: '0 6px',
+                                        padding: '0 4px',
                                     }}>
-                                        <div style={{ width: '20px', height: '2px', background: 'var(--accent-blue)', borderRadius: '1px' }} />
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                        <div style={{ width: '14px', height: '2px', background: 'var(--accent-blue)', borderRadius: '1px' }} />
+                                        {/* Ship icon between the route */}
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.8 }}>
+                                            <path d="M2 21c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1s1.2 1 2.5 1c2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" />
+                                            <path d="M19.38 20A11.5 11.5 0 0 0 21 12l-9-4-9 4c0 5 2 8 4.62 10" />
+                                        </svg>
+                                        <div style={{ width: '14px', height: '2px', background: 'var(--accent-blue)', borderRadius: '1px' }} />
+                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
                                             <path d="M5 12h14M12 5l7 7-7 7" />
                                         </svg>
                                     </div>
@@ -253,114 +277,180 @@ export default function VesselSection({ auth }) {
                         </div>
                     </div>
 
+                    {/* ─── 1b. HUD Telemetry Strip ─── */}
+                    <div className="shrink-0" style={{ background: 'rgba(248,250,252,0.7)', borderBottom: '1px solid var(--border-glass)' }}>
+                        <div className="max-w-6xl mx-auto px-6 py-2.5 flex gap-3 flex-wrap">
+                            {[
+                                { label: '⚡ SOG', value: vessel.vessel_sog != null ? `${vessel.vessel_sog} kn` : '—' },
+                                { label: '🧭 COG', value: vessel.vessel_cog != null ? `${vessel.vessel_cog}°` : '—' },
+                                { label: '📍 Position', value: latestPosition ? `${latestPosition.latitude?.toFixed(4)}, ${latestPosition.longitude?.toFixed(4)}` : '—', mono: true },
+                                { label: '📊 Track', value: `${historicPositions.length} hist · ${latestPosition ? 1 : 0} live · ${predictedPositions.length} pred` },
+                                { label: '🚢 Ports', value: `${portcalls.filter(pc => pc.atd_datetime).length}/${portcalls.length} called` },
+                            ].map((item, i) => (
+                                <div key={i} style={{
+                                    padding: '6px 14px', borderRadius: '8px',
+                                    background: 'rgba(255,255,255,0.8)',
+                                    border: '1px solid var(--border-glass)',
+                                    display: 'flex', alignItems: 'center', gap: '6px',
+                                }}>
+                                    <span style={{ fontSize: '9px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                        {item.label}
+                                    </span>
+                                    <span style={{
+                                        fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)',
+                                        fontFamily: item.mono ? "'IBM Plex Mono', monospace" : 'inherit',
+                                    }}>
+                                        {item.value}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
                     {/* ─── 2 & 3. Map + Timeline ─── */}
                     <div className="flex-1 flex min-h-0">
-                        {/* LEFT: Vertical Timeline Sidebar */}
+                        {/* LEFT: Collapsible Vertical Timeline Sidebar */}
                         <div style={{
-                            width: '300px', flexShrink: 0,
+                            width: timelineOpen ? '300px' : '48px',
+                            flexShrink: 0,
                             borderRight: '1px solid var(--border-glass)',
                             background: 'rgba(255,255,255,0.5)',
-                            overflowY: 'auto',
+                            overflowY: timelineOpen ? 'auto' : 'hidden',
+                            overflowX: 'hidden',
                             display: 'flex', flexDirection: 'column',
+                            transition: 'width 0.3s cubic-bezier(0.16,1,0.3,1)',
                         }}>
-                            <div style={{
-                                padding: '14px 16px 6px',
-                                fontSize: '10px', fontWeight: 700, textTransform: 'uppercase',
-                                letterSpacing: '0.1em', color: 'var(--text-muted)',
-                                fontFamily: "'Outfit', sans-serif",
-                            }}>
-                                Journey Timeline
-                            </div>
+                            {/* Timeline header with toggle */}
+                            <button
+                                onClick={() => setTimelineOpen(v => !v)}
+                                style={{
+                                    padding: timelineOpen ? '12px 16px' : '12px 0',
+                                    display: 'flex', alignItems: 'center', gap: '8px',
+                                    border: 'none', background: 'transparent',
+                                    cursor: 'pointer', flexShrink: 0,
+                                    width: '100%',
+                                    justifyContent: timelineOpen ? 'flex-start' : 'center',
+                                    transition: 'all 0.2s',
+                                }}
+                                onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,0,0,0.02)'}
+                                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                            >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2"
+                                    style={{ transform: timelineOpen ? 'rotate(0)' : 'rotate(180deg)', transition: 'transform 0.3s', flexShrink: 0 }}>
+                                    <polyline points="15 18 9 12 15 6" />
+                                </svg>
+                                {timelineOpen && (
+                                    <span style={{
+                                        fontSize: '10px', fontWeight: 700, textTransform: 'uppercase',
+                                        letterSpacing: '0.1em', color: 'var(--text-muted)',
+                                        fontFamily: "'Outfit', sans-serif",
+                                        whiteSpace: 'nowrap',
+                                    }}>
+                                        Journey Timeline
+                                    </span>
+                                )}
+                            </button>
 
-                            <div style={{ padding: '6px 16px 16px', flex: 1 }}>
-                                {portcalls.map((pc, i) => {
-                                    const isDone = !!pc.atd_datetime
-                                    const isLast = i === portcalls.length - 1
-                                    const dotColor = isDone ? '#059669' : '#94a3b8'
-                                    const dotBorder = isDone ? '#059669' : '#cbd5e1'
+                            {/* Port cards (hidden when collapsed) */}
+                            {timelineOpen && (
+                                <div style={{ padding: '0 16px 16px', flex: 1 }}>
+                                    {portcalls.map((pc, i) => {
+                                        const isDone = !!pc.atd_datetime
+                                        const isLast = i === portcalls.length - 1
+                                        const dotColor = isDone ? '#059669' : '#94a3b8'
+                                        const dotBorder = isDone ? '#059669' : '#cbd5e1'
+                                        const isFocused = focusedPort === i
 
-                                    return (
-                                        <div key={i} style={{ display: 'flex', gap: '12px', position: 'relative' }}>
-                                            {/* Timeline track */}
-                                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '18px', flexShrink: 0 }}>
-                                                {/* Dot: filled for done, outlined for upcoming */}
-                                                <div style={{
-                                                    width: '12px', height: '12px', borderRadius: '50%',
-                                                    background: isDone ? dotColor : 'transparent',
-                                                    border: `2.5px solid ${dotBorder}`,
-                                                    marginTop: '14px', flexShrink: 0,
-                                                    boxShadow: isDone ? `0 0 8px ${dotColor}40` : 'none',
-                                                    transition: 'all 0.3s',
-                                                }} />
-                                                {/* Connecting line */}
-                                                {!isLast && (
+                                        return (
+                                            <div key={i} style={{ display: 'flex', gap: '12px', position: 'relative' }}>
+                                                {/* Timeline track */}
+                                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '18px', flexShrink: 0 }}>
                                                     <div style={{
-                                                        width: '2px', flex: 1, minHeight: '16px',
-                                                        background: isDone
-                                                            ? 'linear-gradient(to bottom, #059669, #05966940)'
-                                                            : 'linear-gradient(to bottom, #cbd5e1, #e2e8f0)',
+                                                        width: '12px', height: '12px', borderRadius: '50%',
+                                                        background: isDone ? dotColor : 'transparent',
+                                                        border: `2.5px solid ${dotBorder}`,
+                                                        marginTop: '14px', flexShrink: 0,
+                                                        boxShadow: isDone ? `0 0 8px ${dotColor}40` : 'none',
+                                                        transition: 'all 0.3s',
                                                     }} />
-                                                )}
-                                            </div>
+                                                    {!isLast && (
+                                                        <div style={{
+                                                            width: '2px', flex: 1, minHeight: '16px',
+                                                            background: isDone
+                                                                ? 'linear-gradient(to bottom, #059669, #05966940)'
+                                                                : 'linear-gradient(to bottom, #cbd5e1, #e2e8f0)',
+                                                        }} />
+                                                    )}
+                                                </div>
 
-                                            {/* Port info card */}
-                                            <button
-                                                onClick={() => flyToPort(pc)}
-                                                style={{
-                                                    flex: 1, marginBottom: '4px',
-                                                    padding: '10px 12px', borderRadius: '10px',
-                                                    background: 'rgba(255,255,255,0.7)',
-                                                    border: '1px solid var(--border-glass)',
-                                                    textAlign: 'left', cursor: 'pointer',
-                                                    transition: 'all 0.2s',
-                                                }}
-                                                onMouseEnter={e => {
-                                                    e.currentTarget.style.background = 'rgba(59,130,246,0.04)'
-                                                    e.currentTarget.style.borderColor = 'rgba(59,130,246,0.2)'
-                                                    e.currentTarget.style.boxShadow = '0 2px 8px rgba(59,130,246,0.06)'
-                                                }}
-                                                onMouseLeave={e => {
-                                                    e.currentTarget.style.background = 'rgba(255,255,255,0.7)'
-                                                    e.currentTarget.style.borderColor = 'var(--border-glass)'
-                                                    e.currentTarget.style.boxShadow = 'none'
-                                                }}
-                                            >
-                                                <div className="flex items-center gap-2 mb-1">
-                                                    <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
-                                                        {pc.port_name || pc.un_location_code}
-                                                    </span>
-                                                    <span style={{
-                                                        fontSize: '9px', fontWeight: 600,
-                                                        padding: '1px 5px', borderRadius: '4px',
-                                                        background: isDone ? 'rgba(5,150,105,0.08)' : 'rgba(0,0,0,0.04)',
-                                                        color: isDone ? '#059669' : 'var(--text-muted)',
-                                                    }}>
-                                                        {pc.un_location_code}
-                                                    </span>
-                                                </div>
-                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '10px', color: 'var(--text-secondary)' }}>
-                                                    {pc.ata_datetime && (
-                                                        <div><span style={{ color: 'var(--text-muted)', fontWeight: 600, width: '28px', display: 'inline-block' }}>ATA</span> {fmtDate(pc.ata_datetime)}</div>
-                                                    )}
-                                                    {pc.atd_datetime && (
-                                                        <div><span style={{ color: 'var(--text-muted)', fontWeight: 600, width: '28px', display: 'inline-block' }}>ATD</span> {fmtDate(pc.atd_datetime)}</div>
-                                                    )}
-                                                    {!isDone && pc.eta_datetime && (
-                                                        <div><span style={{ color: '#f59e0b', fontWeight: 600, width: '28px', display: 'inline-block' }}>ETA</span> {fmtDate(pc.eta_datetime)}</div>
-                                                    )}
-                                                    {!isDone && pc.sta_datetime && !pc.eta_datetime && (
-                                                        <div><span style={{ color: '#f59e0b', fontWeight: 600, width: '28px', display: 'inline-block' }}>STA</span> {fmtDate(pc.sta_datetime)}</div>
-                                                    )}
-                                                </div>
-                                            </button>
-                                        </div>
-                                    )
-                                })}
-                            </div>
+                                                {/* Port info card */}
+                                                <button
+                                                    onClick={() => flyToPort(pc, i)}
+                                                    style={{
+                                                        flex: 1, marginBottom: '4px',
+                                                        padding: '10px 12px', borderRadius: '10px',
+                                                        background: isFocused ? 'rgba(59,130,246,0.06)' : 'rgba(255,255,255,0.7)',
+                                                        border: '1px solid',
+                                                        borderColor: isFocused ? 'rgba(59,130,246,0.3)' : 'var(--border-glass)',
+                                                        borderLeft: isFocused ? '3px solid #3b82f6' : '1px solid var(--border-glass)',
+                                                        textAlign: 'left', cursor: 'pointer',
+                                                        transition: 'all 0.2s',
+                                                        boxShadow: isFocused ? '0 2px 10px rgba(59,130,246,0.08)' : 'none',
+                                                    }}
+                                                    onMouseEnter={e => {
+                                                        if (!isFocused) {
+                                                            e.currentTarget.style.background = 'rgba(59,130,246,0.04)'
+                                                            e.currentTarget.style.borderColor = 'rgba(59,130,246,0.2)'
+                                                            e.currentTarget.style.borderLeft = '3px solid rgba(59,130,246,0.3)'
+                                                            e.currentTarget.style.boxShadow = '0 2px 8px rgba(59,130,246,0.06)'
+                                                        }
+                                                    }}
+                                                    onMouseLeave={e => {
+                                                        if (!isFocused) {
+                                                            e.currentTarget.style.background = 'rgba(255,255,255,0.7)'
+                                                            e.currentTarget.style.borderColor = 'var(--border-glass)'
+                                                            e.currentTarget.style.borderLeft = '1px solid var(--border-glass)'
+                                                            e.currentTarget.style.boxShadow = 'none'
+                                                        }
+                                                    }}
+                                                >
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                                                            {pc.port_name || pc.un_location_code}
+                                                        </span>
+                                                        <span style={{
+                                                            fontSize: '9px', fontWeight: 600,
+                                                            padding: '1px 5px', borderRadius: '4px',
+                                                            background: isDone ? 'rgba(5,150,105,0.08)' : 'rgba(0,0,0,0.04)',
+                                                            color: isDone ? '#059669' : 'var(--text-muted)',
+                                                        }}>
+                                                            {pc.un_location_code}
+                                                        </span>
+                                                    </div>
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '10px', color: 'var(--text-secondary)' }}>
+                                                        {pc.ata_datetime && (
+                                                            <div><span style={{ color: 'var(--text-muted)', fontWeight: 600, width: '28px', display: 'inline-block' }}>ATA</span> {fmtDate(pc.ata_datetime)}</div>
+                                                        )}
+                                                        {pc.atd_datetime && (
+                                                            <div><span style={{ color: 'var(--text-muted)', fontWeight: 600, width: '28px', display: 'inline-block' }}>ATD</span> {fmtDate(pc.atd_datetime)}</div>
+                                                        )}
+                                                        {!isDone && pc.eta_datetime && (
+                                                            <div><span style={{ color: '#f59e0b', fontWeight: 600, width: '28px', display: 'inline-block' }}>ETA</span> {fmtDate(pc.eta_datetime)}</div>
+                                                        )}
+                                                        {!isDone && pc.sta_datetime && !pc.eta_datetime && (
+                                                            <div><span style={{ color: '#f59e0b', fontWeight: 600, width: '28px', display: 'inline-block' }}>STA</span> {fmtDate(pc.sta_datetime)}</div>
+                                                        )}
+                                                    </div>
+                                                </button>
+                                            </div>
+                                        )
+                                    })}
+                                </div>
+                            )}
                         </div>
 
                         {/* RIGHT: Map (main focus) */}
-                        <div className="flex-1 relative" style={{ minHeight: '400px' }}>
+                        <div className="flex-1 relative" style={{ minHeight: '450px' }}>
                             <MapContainer
                                 center={[15, 90]}
                                 zoom={3}
@@ -374,7 +464,6 @@ export default function VesselSection({ auth }) {
                                     maxZoom={19}
                                 />
 
-                                {/* Auto-fit bounds */}
                                 <FitBoundsHelper positions={positions} portcalls={portcalls} />
 
                                 {/* Historic polyline (cyan) */}
@@ -457,7 +546,7 @@ export default function VesselSection({ auth }) {
 
                             {/* Map Legend */}
                             <div style={{
-                                position: 'absolute', bottom: '16px', left: '16px', zIndex: 1000,
+                                position: 'absolute', bottom: '16px', right: '16px', zIndex: 1000,
                                 padding: '10px 14px', borderRadius: '10px',
                                 background: 'rgba(255,255,255,0.93)', backdropFilter: 'blur(8px)',
                                 border: '1px solid var(--border-glass)',
@@ -485,6 +574,73 @@ export default function VesselSection({ auth }) {
                                     <span style={{ color: 'var(--text-secondary)' }}>Port (Upcoming)</span>
                                 </div>
                             </div>
+
+                            {/* Raw JSON toggle button (bottom-left) */}
+                            <button
+                                onClick={() => setRawJsonOpen(v => !v)}
+                                title="Toggle Raw JSON"
+                                style={{
+                                    position: 'absolute', bottom: rawJsonOpen ? '320px' : '16px', left: '16px', zIndex: 1001,
+                                    width: '36px', height: '36px', borderRadius: '10px',
+                                    background: rawJsonOpen ? 'var(--gradient-brand)' : 'rgba(255,255,255,0.93)',
+                                    backdropFilter: 'blur(8px)',
+                                    border: rawJsonOpen ? 'none' : '1px solid var(--border-glass)',
+                                    boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
+                                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    color: rawJsonOpen ? '#fff' : 'var(--text-muted)',
+                                    transition: 'all 0.3s',
+                                    fontSize: '14px', fontWeight: 800,
+                                    fontFamily: "'JetBrains Mono', monospace",
+                                }}
+                            >
+                                { }
+                            </button>
+
+                            {/* Raw JSON Panel (bottom-left, expands upward) */}
+                            {rawJsonOpen && (
+                                <div style={{
+                                    position: 'absolute', bottom: '16px', left: '16px', zIndex: 1000,
+                                    width: '420px', maxHeight: '300px',
+                                    borderRadius: '12px',
+                                    background: '#1e293b',
+                                    border: '1px solid rgba(255,255,255,0.1)',
+                                    boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+                                    display: 'flex', flexDirection: 'column',
+                                    overflow: 'hidden',
+                                    animation: 'slideUp 0.25s ease-out',
+                                }}>
+                                    <div style={{
+                                        padding: '10px 14px',
+                                        borderBottom: '1px solid rgba(255,255,255,0.08)',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                        flexShrink: 0,
+                                    }}>
+                                        <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#94a3b8' }}>
+                                            Raw API Response
+                                        </span>
+                                        <button
+                                            onClick={() => setRawJsonOpen(false)}
+                                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b', padding: '2px', display: 'flex' }}
+                                        >
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                    <pre style={{
+                                        flex: 1, overflowY: 'auto', margin: 0,
+                                        padding: '12px 14px',
+                                        fontSize: '10px',
+                                        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                                        color: '#94a3b8',
+                                        whiteSpace: 'pre-wrap',
+                                        wordBreak: 'break-word',
+                                        lineHeight: 1.5,
+                                    }}>
+                                        {JSON.stringify(data, null, 2)}
+                                    </pre>
+                                </div>
+                            )}
                         </div>
                     </div>
 
