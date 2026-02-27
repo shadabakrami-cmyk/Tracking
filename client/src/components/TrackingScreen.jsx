@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import DCSAView from './DCSAView'
-import VesselWidget from './VesselWidget'
+import VesselSection from './VesselSection'
 import { normalizeResponse } from '../utils/normalizeResponse'
 
 const API_URL = 'https://tracking-bgr2.onrender.com/api'
@@ -9,6 +9,7 @@ const TABS = [
     { key: 'bl', label: 'Bill of Lading', placeholder: 'Enter Bill of Lading number' },
     { key: 'booking', label: 'Booking Number', placeholder: 'Enter Booking reference' },
     { key: 'container', label: 'Container Number', placeholder: 'Enter Container number' },
+    { key: 'vessel', label: 'Vessel Journey' },
 ]
 
 export default function TrackingScreen({ auth, onDisconnect }) {
@@ -194,20 +195,21 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                 </div>
             </nav>
 
-            {/* Search Section */}
+            {/* Tabs */}
             <div className="shrink-0" style={{ borderBottom: '1px solid var(--border-glass)', background: 'rgba(255, 255, 255, 0.5)' }}>
-                <div className="max-w-4xl mx-auto px-6 pt-5 pb-6">
-                    {/* Tabs */}
-                    <div className="flex gap-1 mb-5 p-1 rounded-xl" style={{ background: 'rgba(0,0,0,0.03)' }}>
+                <div className="max-w-4xl mx-auto px-6 pt-5 pb-2">
+                    <div className="flex gap-1 p-1 rounded-xl" style={{ background: 'rgba(0,0,0,0.03)' }}>
                         {TABS.map((tab) => (
                             <button
                                 key={tab.key}
                                 onClick={() => {
                                     setActiveTab(tab.key)
-                                    setError('')
-                                    setResult(null)
-                                    setSelectedEventIndex(null)
-                                    setSelectedContainer(null)
+                                    if (tab.key !== 'vessel') {
+                                        setError('')
+                                        setResult(null)
+                                        setSelectedEventIndex(null)
+                                        setSelectedContainer(null)
+                                    }
                                 }}
                                 className="flex-1 py-2 text-sm font-medium rounded-lg transition-all duration-300 cursor-pointer"
                                 style={{
@@ -220,109 +222,120 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                             </button>
                         ))}
                     </div>
+                </div>
+            </div>
 
-                    {/* Input + Button */}
-                    <form onSubmit={handleTrack} className="flex gap-3">
-                        <div className="flex-1 relative">
-                            <span className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }}>
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                    <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                                </svg>
-                            </span>
-                            <input
-                                type="text"
-                                value={reference}
-                                onChange={(e) => setReference(e.target.value)}
-                                placeholder={currentTab?.placeholder}
-                                className="w-full pl-10 pr-4 py-3 rounded-xl text-sm transition-all duration-200 outline-none"
-                                style={{
-                                    background: 'rgba(255,255,255,0.9)',
-                                    border: '1px solid var(--border-glass)',
-                                    color: 'var(--text-primary)',
-                                }}
-                                onFocus={(e) => { e.target.style.borderColor = 'rgba(59,130,246,0.5)'; e.target.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)'; }}
-                                onBlur={(e) => { e.target.style.borderColor = 'var(--border-glass)'; e.target.style.boxShadow = 'none'; }}
-                            />
-                        </div>
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="px-8 py-3 rounded-xl text-sm font-semibold text-white transition-all duration-300 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-                            style={{
-                                background: loading ? 'rgba(0,0,0,0.08)' : 'var(--gradient-btn)',
-                                boxShadow: loading ? 'none' : '0 4px 15px rgba(59, 130, 246, 0.25)',
-                            }}
-                            onMouseEnter={(e) => { if (!loading) { e.target.style.background = 'var(--gradient-btn-hover)'; e.target.style.boxShadow = '0 6px 20px rgba(59, 130, 246, 0.4)'; } }}
-                            onMouseLeave={(e) => { if (!loading) { e.target.style.background = 'var(--gradient-btn)'; e.target.style.boxShadow = '0 4px 15px rgba(59, 130, 246, 0.3)'; } }}
-                        >
-                            {loading ? (
-                                <span className="inline-flex items-center gap-2">
-                                    <svg className="w-4 h-4" style={{ animation: 'spin 1s linear infinite' }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                        <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                                    </svg>
-                                    Tracking...
-                                </span>
-                            ) : 'Track Shipment'}
-                        </button>
-                    </form>
+            {/* Vessel Journey Section */}
+            {activeTab === 'vessel' && <VesselSection auth={auth} />}
 
-                    {error && (
-                        <div className="mt-3 text-sm rounded-xl px-4 py-3 flex items-start gap-2"
-                            style={{
-                                background: 'rgba(239, 68, 68, 0.1)',
-                                border: '1px solid rgba(239, 68, 68, 0.2)',
-                                color: '#dc2626',
-                                animation: 'slideUp 0.3s ease-out',
-                            }}>
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 mt-0.5" style={{ color: '#f87171' }}>
-                                <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
-                            </svg>
-                            {error}
-                        </div>
-                    )}
+            {/* Search Section (only for tracking tabs) */}
+            {activeTab !== 'vessel' && (
+                <div className="shrink-0" style={{ borderBottom: '1px solid var(--border-glass)', background: 'rgba(255, 255, 255, 0.5)' }}>
+                    <div className="max-w-4xl mx-auto px-6 pt-4 pb-6">
 
-                    {/* Container Dropdown */}
-                    {result && containerList.length > 1 && (activeTab === 'bl' || activeTab === 'booking') && (
-                        <div className="mt-4" style={{ animation: 'slideUp 0.3s ease-out' }}>
-                            <div className="relative">
-                                <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--text-muted)' }}>
+                        {/* Input + Button */}
+                        <form onSubmit={handleTrack} className="flex gap-3">
+                            <div className="flex-1 relative">
+                                <span className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }}>
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <rect x="1" y="4" width="22" height="14" rx="2" /><path d="M1 10h22" />
+                                        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
                                     </svg>
                                 </span>
-                                <select
-                                    value={selectedContainer || ''}
-                                    onChange={(e) => { setSelectedContainer(e.target.value || null); setSelectedEventIndex(null); }}
-                                    className="pl-10 pr-10 py-2 rounded-xl text-sm transition-all duration-200 outline-none cursor-pointer appearance-none"
+                                <input
+                                    type="text"
+                                    value={reference}
+                                    onChange={(e) => setReference(e.target.value)}
+                                    placeholder={currentTab?.placeholder}
+                                    className="w-full pl-10 pr-4 py-3 rounded-xl text-sm transition-all duration-200 outline-none"
                                     style={{
                                         background: 'rgba(255,255,255,0.9)',
                                         border: '1px solid var(--border-glass)',
                                         color: 'var(--text-primary)',
-                                        minWidth: '280px',
                                     }}
                                     onFocus={(e) => { e.target.style.borderColor = 'rgba(59,130,246,0.5)'; e.target.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)'; }}
                                     onBlur={(e) => { e.target.style.borderColor = 'var(--border-glass)'; e.target.style.boxShadow = 'none'; }}
-                                >
-                                    <option value="">All Containers ({containerList.reduce((sum, c) => sum + c.eventCount, 0)} events)</option>
-                                    {containerList.map((c) => (
-                                        <option key={c.equipmentReference} value={c.equipmentReference}>
-                                            {c.equipmentReference}  —  {c.eventCount} events{c.latestStatus ? `  ·  ${c.latestStatus}` : ''}
-                                        </option>
-                                    ))}
-                                </select>
-                                <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--text-muted)' }}>
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <polyline points="6 9 12 15 18 9" />
-                                    </svg>
-                                </span>
+                                />
                             </div>
-                        </div>
-                    )}
+                            <button
+                                type="submit"
+                                disabled={loading}
+                                className="px-8 py-3 rounded-xl text-sm font-semibold text-white transition-all duration-300 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                                style={{
+                                    background: loading ? 'rgba(0,0,0,0.08)' : 'var(--gradient-btn)',
+                                    boxShadow: loading ? 'none' : '0 4px 15px rgba(59, 130, 246, 0.25)',
+                                }}
+                                onMouseEnter={(e) => { if (!loading) { e.target.style.background = 'var(--gradient-btn-hover)'; e.target.style.boxShadow = '0 6px 20px rgba(59, 130, 246, 0.4)'; } }}
+                                onMouseLeave={(e) => { if (!loading) { e.target.style.background = 'var(--gradient-btn)'; e.target.style.boxShadow = '0 4px 15px rgba(59, 130, 246, 0.3)'; } }}
+                            >
+                                {loading ? (
+                                    <span className="inline-flex items-center gap-2">
+                                        <svg className="w-4 h-4" style={{ animation: 'spin 1s linear infinite' }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                                        </svg>
+                                        Tracking...
+                                    </span>
+                                ) : 'Track Shipment'}
+                            </button>
+                        </form>
+
+                        {error && (
+                            <div className="mt-3 text-sm rounded-xl px-4 py-3 flex items-start gap-2"
+                                style={{
+                                    background: 'rgba(239, 68, 68, 0.1)',
+                                    border: '1px solid rgba(239, 68, 68, 0.2)',
+                                    color: '#dc2626',
+                                    animation: 'slideUp 0.3s ease-out',
+                                }}>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 mt-0.5" style={{ color: '#f87171' }}>
+                                    <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
+                                </svg>
+                                {error}
+                            </div>
+                        )}
+
+                        {/* Container Dropdown */}
+                        {result && containerList.length > 1 && (activeTab === 'bl' || activeTab === 'booking') && (
+                            <div className="mt-4" style={{ animation: 'slideUp 0.3s ease-out' }}>
+                                <div className="relative">
+                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--text-muted)' }}>
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <rect x="1" y="4" width="22" height="14" rx="2" /><path d="M1 10h22" />
+                                        </svg>
+                                    </span>
+                                    <select
+                                        value={selectedContainer || ''}
+                                        onChange={(e) => { setSelectedContainer(e.target.value || null); setSelectedEventIndex(null); }}
+                                        className="pl-10 pr-10 py-2 rounded-xl text-sm transition-all duration-200 outline-none cursor-pointer appearance-none"
+                                        style={{
+                                            background: 'rgba(255,255,255,0.9)',
+                                            border: '1px solid var(--border-glass)',
+                                            color: 'var(--text-primary)',
+                                            minWidth: '280px',
+                                        }}
+                                        onFocus={(e) => { e.target.style.borderColor = 'rgba(59,130,246,0.5)'; e.target.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)'; }}
+                                        onBlur={(e) => { e.target.style.borderColor = 'var(--border-glass)'; e.target.style.boxShadow = 'none'; }}
+                                    >
+                                        <option value="">All Containers ({containerList.reduce((sum, c) => sum + c.eventCount, 0)} events)</option>
+                                        {containerList.map((c) => (
+                                            <option key={c.equipmentReference} value={c.equipmentReference}>
+                                                {c.equipmentReference}  —  {c.eventCount} events{c.latestStatus ? `  ·  ${c.latestStatus}` : ''}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--text-muted)' }}>
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <polyline points="6 9 12 15 18 9" />
+                                        </svg>
+                                    </span>
+                                </div>
+                            </div>
+                        )}
+                    </div>
                 </div>
-            </div>
+            )}
 
             {/* Results Section */}
-            {result && (
+            {activeTab !== 'vessel' && result && (
                 <div className="flex max-w-7xl mx-auto w-full" style={{ animation: 'fadeIn 0.4s ease-out', height: '100vh' }}>
                     {/* Left: DCSA View */}
                     <div className="flex-1 flex flex-col min-h-0" style={{ borderRight: '1px solid var(--border-glass)' }}>
@@ -368,8 +381,6 @@ export default function TrackingScreen({ auth, onDisconnect }) {
                 </div>
             )}
 
-            {/* Floating Vessel Widget */}
-            <VesselWidget auth={auth} />
         </div>
     )
 }
