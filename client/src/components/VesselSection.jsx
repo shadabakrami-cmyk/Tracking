@@ -438,9 +438,9 @@ function LeafletRouteMap({ leg, wide = false }) {
             <div style={{ height: wide ? 380 : 240, position: 'relative' }}>
                 <MapContainer center={[10, 80]} zoom={3} style={{ position: 'absolute', inset: 0 }} zoomControl={true}>
                     <TileLayer
-                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                        attribution='&copy; OpenStreetMap'
-                        maxZoom={19}
+                        url="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=en&gl=in"
+                        attribution='Map data &copy; Google'
+                        maxZoom={20}
                     />
                     <FitBounds positions={positions} portcalls={pcs} />
 
