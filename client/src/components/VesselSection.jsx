@@ -1,11 +1,14 @@
-import { useState, useMemo } from 'react'
-import { douglasPeucker, segmentVoyage, computeBounds, lngToX, latToY } from '../utils/mapHelpers'
+﻿import { useState, useMemo, useEffect } from 'react'
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
+import { MapContainer, TileLayer, Polyline, CircleMarker, Marker, Popup, useMap } from 'react-leaflet'
+import { douglasPeucker, segmentVoyage } from '../utils/mapHelpers'
 
 const API_URL = import.meta.env.VITE_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:4000/api' : 'https://tracking-bgr2.onrender.com/api')
 
-/* ═══════════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    DESIGN TOKENS
-   ═══════════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 const T = {
     bg: '#f1f5f9', card: '#ffffff', border: '#e2e8f0',
     shadow: '0 1px 4px rgba(0,0,0,0.05)',
@@ -19,17 +22,17 @@ const T = {
     r: '6px',
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    HELPERS
-   ═══════════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function fmt(d) {
-    if (!d) return '—'
+    if (!d) return 'â€”'
     try {
         return new Date(d).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
     } catch { return d }
 }
 function fmtShort(d) {
-    if (!d) return '—'
+    if (!d) return 'â€”'
     try { return new Date(d).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) } catch { return d }
 }
 function sortDate(pc) {
@@ -45,9 +48,9 @@ function dwell(pc) {
     return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 function journeyTime(start, end) {
-    if (!start || !end) return '—'
+    if (!start || !end) return 'â€”'
     const ms = new Date(end) - new Date(start)
-    if (ms < 0) return '—'
+    if (ms < 0) return 'â€”'
     const d = Math.floor(ms / 86400000)
     const h = Math.floor((ms % 86400000) / 3600000)
     return d > 0 ? `${d}d ${h}h` : `${h}h`
@@ -61,9 +64,9 @@ function countryFlag(code) {
     return String.fromCodePoint(...[...c].map(ch => 0x1F1E6 + ch.charCodeAt(0) - 65))
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    COMPONENT
-   ═══════════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 export default function VesselSection({ auth }) {
     const [transportId, setTransportId] = useState('')
     const [loading, setLoading] = useState(false)
@@ -91,11 +94,11 @@ export default function VesselSection({ auth }) {
 
     return (
         <div style={{ flex: 1, background: T.bg, fontFamily: T.font, fontSize: '12px', color: T.text, overflowY: 'auto' }}>
-            {/* ──── Input Bar ──── */}
+            {/* â”€â”€â”€â”€ Input Bar â”€â”€â”€â”€ */}
             <div style={{ maxWidth: 600, margin: '20px auto 0', padding: '0 16px' }}>
                 <form onSubmit={handleFetch} style={{ display: 'flex', gap: '8px' }}>
                     <div style={{ position: 'relative', flex: 1 }}>
-                        <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: T.textLight, fontSize: 14 }}>🔍</span>
+                        <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: T.textLight, fontSize: 14 }}>ðŸ”</span>
                         <input
                             value={transportId} onChange={e => setTransportId(e.target.value)}
                             placeholder="Transport ID, e.g. 6667207"
@@ -111,16 +114,16 @@ export default function VesselSection({ auth }) {
                         background: T.primary, color: '#fff', fontSize: 11, fontWeight: 600,
                         opacity: (loading || !transportId.trim()) ? 0.5 : 1,
                     }}>
-                        {loading ? '⏳' : 'Fetch'}
+                        {loading ? 'â³' : 'Fetch'}
                     </button>
                 </form>
-                {error && <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: T.r, background: '#fef2f2', border: '1px solid #fecaca', color: '#dc2626', fontSize: 11 }}>⚠ {error}</div>}
+                {error && <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: T.r, background: '#fef2f2', border: '1px solid #fecaca', color: '#dc2626', fontSize: 11 }}>âš  {error}</div>}
             </div>
 
-            {/* ──── Loading ──── */}
+            {/* â”€â”€â”€â”€ Loading â”€â”€â”€â”€ */}
             {loading && <div style={{ textAlign: 'center', padding: 40, color: T.textMuted }}>Loading vessel data...</div>}
 
-            {/* ──── Data Loaded ──── */}
+            {/* â”€â”€â”€â”€ Data Loaded â”€â”€â”€â”€ */}
             {data && leg && !loading && (
                 <div style={{ padding: '12px 16px', maxWidth: 1200, margin: '0 auto' }}>
                     <TopBar leg={leg} legs={legs} data={data} />
@@ -132,10 +135,10 @@ export default function VesselSection({ auth }) {
                 </div>
             )}
 
-            {/* ──── Empty state ──── */}
+            {/* â”€â”€â”€â”€ Empty state â”€â”€â”€â”€ */}
             {!data && !loading && !error && (
                 <div style={{ textAlign: 'center', padding: '60px 20px', color: T.textMuted }}>
-                    <div style={{ fontSize: 36, marginBottom: 8 }}>⚓</div>
+                    <div style={{ fontSize: 36, marginBottom: 8 }}>âš“</div>
                     <div style={{ fontSize: 14, fontWeight: 600, color: T.text, marginBottom: 4 }}>Vessel Journey Tracker</div>
                     <div>Enter a Transport ID above to view the vessel's route, ports, and position.</div>
                 </div>
@@ -144,9 +147,9 @@ export default function VesselSection({ auth }) {
     )
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    TOP BAR
-   ═══════════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function TopBar({ leg, legs, data }) {
     const v = leg?.vessel || {}
     const state = leg?.state
@@ -164,14 +167,14 @@ function TopBar({ leg, legs, data }) {
             background: T.card, border: `1px solid ${T.border}`, borderRadius: T.r,
             boxShadow: T.shadow, marginBottom: 10, flexWrap: 'wrap',
         }}>
-            <span style={{ fontWeight: 700, fontSize: 13, color: T.primary, whiteSpace: 'nowrap' }}>⚓ VesselTrack</span>
+            <span style={{ fontWeight: 700, fontSize: 13, color: T.primary, whiteSpace: 'nowrap' }}>âš“ VesselTrack</span>
             {divider}
-            <span style={{ fontSize: 11, color: T.textMuted }}>Shipment <b style={{ color: T.text }}>{data?.shipment_id || data?.transport_document_reference || '—'}</b></span>
+            <span style={{ fontSize: 11, color: T.textMuted }}>Shipment <b style={{ color: T.text }}>{data?.shipment_id || data?.transport_document_reference || 'â€”'}</b></span>
             {divider}
-            <span style={{ fontSize: 11, color: T.textMuted }}>Carrier <b style={{ color: T.text }}>{leg?.carrier_name || v?.carrier_code || '—'}</b></span>
+            <span style={{ fontSize: 11, color: T.textMuted }}>Carrier <b style={{ color: T.text }}>{leg?.carrier_name || v?.carrier_code || 'â€”'}</b></span>
             {divider}
             <span style={{ fontSize: 11, color: T.textMuted }}>
-                {origin?.port_name || leg?.pol_un_location_code || '?'} → {dest?.port_name || leg?.pod_un_location_code || '?'}
+                {origin?.port_name || leg?.pol_un_location_code || '?'} â†’ {dest?.port_name || leg?.pod_un_location_code || '?'}
             </span>
             {v.vessel_country_code && <>
                 {divider}
@@ -184,16 +187,16 @@ function TopBar({ leg, legs, data }) {
                     color: isComplete ? T.past.color : T.fut.color,
                     border: `1px solid ${isComplete ? T.past.border : T.fut.border}`,
                 }}>
-                    {isComplete ? '✓ COMPLETED' : state === 'ONGOING' ? '⏳ IN TRANSIT' : '⏳ UPCOMING'}
+                    {isComplete ? 'âœ“ COMPLETED' : state === 'ONGOING' ? 'â³ IN TRANSIT' : 'â³ UPCOMING'}
                 </span>
             </div>
         </div>
     )
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    JOURNEY STEPPER
-   ═══════════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function JourneyStepper({ legs, activeLeg, setActiveLeg }) {
     // Collect all ports across all legs in order
     const steps = []
@@ -250,22 +253,22 @@ function JourneyStepper({ legs, activeLeg, setActiveLeg }) {
     )
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    STATS BAR
-   ═══════════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function StatsBar({ leg }) {
     const v = leg?.vessel || {}
     const pcs = leg?.portcalls || []
     const pos = leg?.positions || []
     const jt = journeyTime(leg?.start_datetime, leg?.end_datetime)
-    const size = v.vessel_length && v.vessel_width ? `${v.vessel_length}×${v.vessel_width}m` : '—'
+    const size = v.vessel_length && v.vessel_width ? `${v.vessel_length}Ã—${v.vessel_width}m` : 'â€”'
 
     const pills = [
         { val: jt, label: 'Journey Time' },
         { val: `${pcs.length}`, label: 'Port Calls' },
         { val: size, label: 'Vessel Size' },
         { val: `${pos.length}`, label: 'AIS Positions' },
-        { val: v.vessel_sog != null ? `${v.vessel_sog} kn` : '—', label: 'Speed (SOG)' },
+        { val: v.vessel_sog != null ? `${v.vessel_sog} kn` : 'â€”', label: 'Speed (SOG)' },
     ]
 
     return (
@@ -283,9 +286,9 @@ function StatsBar({ leg }) {
     )
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    SINGLE-LEG VIEW (2-column)
-   ═══════════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function SingleLegView({ leg }) {
     return (
         <>
@@ -304,9 +307,9 @@ function SingleLegView({ leg }) {
     )
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    VESSEL INFO CARD
-   ═══════════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function VesselInfoCard({ leg, mini = false }) {
     const v = leg?.vessel || {}
     const rows = [
@@ -319,7 +322,7 @@ function VesselInfoCard({ leg, mini = false }) {
         { label: 'Length', value: v.vessel_length ? `${v.vessel_length} m` : null },
         { label: 'Width', value: v.vessel_width ? `${v.vessel_width} m` : null },
         { label: 'Speed (SOG)', value: v.vessel_sog != null ? `${v.vessel_sog} kn` : null },
-        { label: 'Course (COG)', value: v.vessel_cog != null ? `${v.vessel_cog}°` : null },
+        { label: 'Course (COG)', value: v.vessel_cog != null ? `${v.vessel_cog}Â°` : null },
         { label: 'Draught', value: v.vessel_draught ? `${v.vessel_draught} m` : null },
         { label: 'Year Built', value: v.vessel_year_built },
         { label: 'Nav Status', value: v.vessel_navigation_status },
@@ -331,7 +334,7 @@ function VesselInfoCard({ leg, mini = false }) {
     return (
         <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.r, boxShadow: T.shadow, overflow: 'hidden' }}>
             <div style={{ padding: '8px 12px', borderBottom: `1px solid ${T.border}`, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textMuted }}>
-                🚢 Vessel Information
+                ðŸš¢ Vessel Information
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
                 {display.map((r, i) => (
@@ -345,9 +348,9 @@ function VesselInfoCard({ leg, mini = false }) {
     )
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    PORT CALL TIMELINE
-   ═══════════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function PortTimeline({ leg, mini = false }) {
     const raw = leg?.portcalls || []
     const pcs = useMemo(() => [...raw].sort((a, b) => sortDate(a) - sortDate(b)), [raw])
@@ -357,7 +360,7 @@ function PortTimeline({ leg, mini = false }) {
     return (
         <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.r, boxShadow: T.shadow, overflow: 'hidden' }}>
             <div style={{ padding: '8px 12px', borderBottom: `1px solid ${T.border}`, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textMuted }}>
-                📍 Port Call Timeline
+                ðŸ“ Port Call Timeline
             </div>
             <div style={{ padding: '8px 12px' }}>
                 {pcs.map((pc, i) => {
@@ -403,8 +406,8 @@ function PortTimeline({ leg, mini = false }) {
                                     {pc.ata_datetime && <span><b style={{ color: T.textMuted }}>ATA</b> {fmt(pc.ata_datetime)}</span>}
                                     {pc.atd_datetime && <span><b style={{ color: T.textMuted }}>ATD</b> {fmt(pc.atd_datetime)}</span>}
                                     {!pc.ata_datetime && pc.eta_datetime && <span><b style={{ color: T.warning }}>ETA</b> {fmt(pc.eta_datetime)}</span>}
-                                    {dw && <span style={{ color: T.warning, fontWeight: 600 }}>⏱ {dw}</span>}
-                                    {isDocked && <span style={{ color: '#ea580c', fontWeight: 700 }}>🔶 Still Docked</span>}
+                                    {dw && <span style={{ color: T.warning, fontWeight: 600 }}>â± {dw}</span>}
+                                    {isDocked && <span style={{ color: '#ea580c', fontWeight: 700 }}>ðŸ”¶ Still Docked</span>}
                                 </div>
                                 {leg?.voyage_no && !mini && (
                                     <span style={{
@@ -424,9 +427,9 @@ function PortTimeline({ leg, mini = false }) {
     )
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════════
-   SVG ROUTE MAP
-   ═══════════════════════════════════════════════════════════════════════════════ */
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   LEAFLET ROUTE MAP
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function SvgRouteMap({ leg, wide = false }) {
     const positions = leg?.positions || []
     const raw = leg?.portcalls || []
@@ -434,19 +437,11 @@ function SvgRouteMap({ leg, wide = false }) {
     const polCode = leg?.pol_un_location_code
     const podCode = leg?.pod_un_location_code
 
-    const W = wide ? 1100 : 540
-    const H = wide ? 340 : 200
+    const historic = useMemo(() => positions.filter(p => p.tag === 'historic'), [positions])
+    const predicted = useMemo(() => positions.filter(p => p.tag === 'predicted'), [positions])
+    const latest = useMemo(() => positions.find(p => p.tag === 'latest') || null, [positions])
 
-    const historic = positions.filter(p => p.tag === 'historic')
-    const predicted = positions.filter(p => p.tag === 'predicted')
-    const latest = positions.find(p => p.tag === 'latest')
-
-    const bounds = useMemo(() => computeBounds(positions, pcs, 3), [positions, pcs])
-
-    const toX = lng => lngToX(lng, bounds, W)
-    const toY = lat => latToY(lat, bounds, H)
-
-    // Simplify
+    // Douglas-Peucker simplified coordinates
     const histCoords = useMemo(() => {
         const pts = historic.filter(p => p.latitude && p.longitude).map(p => [p.latitude, p.longitude])
         if (latest) pts.push([latest.latitude, latest.longitude])
@@ -460,109 +455,129 @@ function SvgRouteMap({ leg, wide = false }) {
         return douglasPeucker(pts, 0.003)
     }, [predicted, latest])
 
-    const histPath = histCoords.map(([lat, lng]) => `${toX(lng).toFixed(1)},${toY(lat).toFixed(1)}`).join(' ')
-    const predPath = predCoords.map(([lat, lng]) => `${toX(lng).toFixed(1)},${toY(lat).toFixed(1)}`).join(' ')
-
-    // Waypoint dots along historic route (every 10th simplified point)
-    const waypoints = histCoords.filter((_, i) => i > 0 && i < histCoords.length - 1 && i % 4 === 0)
-
     return (
         <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.r, boxShadow: T.shadow, overflow: 'hidden' }}>
-            <div style={{ padding: '8px 12px', borderBottom: `1px solid ${T.border}`, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textMuted, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span>🗺️ Route Map</span>
-                <span style={{ fontSize: 8, fontWeight: 400, color: T.textLight }}>
-                    {bounds.minLng.toFixed(0)}°E – {bounds.maxLng.toFixed(0)}°E · {bounds.minLat.toFixed(0)}° – {bounds.maxLat.toFixed(0)}°
-                </span>
+            <div style={{ padding: '8px 12px', borderBottom: `1px solid ${T.border}`, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textMuted }}>
+                ðŸ—ºï¸ Route Map
             </div>
-            <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: 'block', background: '#e0f2fe' }}>
-                {/* Ocean grid */}
-                {Array.from({ length: 6 }).map((_, i) => (
-                    <line key={`g${i}`} x1={0} y1={H * i / 5} x2={W} y2={H * i / 5} stroke="#bae6fd" strokeWidth="0.5" strokeDasharray="4 4" />
-                ))}
+            <div style={{ height: wide ? 380 : 240, position: 'relative' }}>
+                <MapContainer center={[10, 80]} zoom={3} style={{ position: 'absolute', inset: 0 }} zoomControl={true}>
+                    <TileLayer
+                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                        attribution='&copy; OpenStreetMap'
+                        maxZoom={19}
+                    />
+                    <FitBounds positions={positions} portcalls={pcs} />
 
-                {/* Historic route (solid green) */}
-                {histCoords.length > 1 && (
-                    <>
-                        <polyline points={histPath} fill="none" stroke={T.success} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                        {/* Animated ship along historic */}
-                        <text fontSize="14" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }}>
-                            <animateMotion dur={`${Math.max(4, histCoords.length * 0.3)}s`} repeatCount="indefinite"
-                                path={`M${histCoords.map(([lat, lng]) => `${toX(lng).toFixed(1)} ${toY(lat).toFixed(1)}`).join(' L ')}`} />
-                            🚢
-                        </text>
-                    </>
-                )}
+                    {/* Historic route â€” solid green */}
+                    {histCoords.length > 1 && (
+                        <Polyline positions={histCoords} pathOptions={{ color: T.success, weight: 3, opacity: 0.9 }} />
+                    )}
 
-                {/* Waypoint dots */}
-                {waypoints.map(([lat, lng], i) => (
-                    <circle key={`wp${i}`} cx={toX(lng)} cy={toY(lat)} r="2" fill={T.success} opacity="0.4" />
-                ))}
+                    {/* Predicted route â€” dashed blue */}
+                    {predCoords.length > 1 && (
+                        <Polyline positions={predCoords} pathOptions={{ color: T.future, weight: 2.5, opacity: 0.7, dashArray: '8 5' }} />
+                    )}
 
-                {/* Predicted route (dashed blue) */}
-                {predCoords.length > 1 && (
-                    <>
-                        <polyline points={predPath} fill="none" stroke={T.future} strokeWidth="2" strokeDasharray="6 4" strokeLinecap="round" />
-                        <text fontSize="12" opacity="0.8">
-                            <animateMotion dur={`${Math.max(3, predCoords.length * 0.3)}s`} repeatCount="indefinite"
-                                path={`M${predCoords.map(([lat, lng]) => `${toX(lng).toFixed(1)} ${toY(lat).toFixed(1)}`).join(' L ')}`} />
-                            🚢
-                        </text>
-                    </>
-                )}
+                    {/* Waypoint dots along historic (every 6th) */}
+                    {histCoords.filter((_, i) => i > 0 && i < histCoords.length - 1 && i % 6 === 0).map((c, i) => (
+                        <CircleMarker key={`wp-${i}`} center={c} radius={2} pathOptions={{ fillColor: T.success, fillOpacity: 0.5, color: T.success, weight: 0.5, opacity: 0.3 }} />
+                    ))}
 
-                {/* Latest position glow */}
-                {latest && (
-                    <>
-                        <circle cx={toX(latest.longitude)} cy={toY(latest.latitude)} r="8" fill={T.success} opacity="0.15">
-                            <animate attributeName="r" values="6;12;6" dur="2s" repeatCount="indefinite" />
-                        </circle>
-                        <circle cx={toX(latest.longitude)} cy={toY(latest.latitude)} r="4" fill={T.success} stroke="#fff" strokeWidth="1.5" />
-                    </>
-                )}
+                    {/* Latest position â€” pulsing green dot */}
+                    {latest && (
+                        <Marker
+                            position={[latest.latitude, latest.longitude]}
+                            icon={L.divIcon({
+                                className: '',
+                                html: `<div style="width:14px;height:14px;border-radius:50%;background:${T.success};border:3px solid #fff;box-shadow:0 0 10px ${T.success}99;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)"></div>`,
+                                iconSize: [14, 14], iconAnchor: [7, 7],
+                            })}
+                        >
+                            <Popup>
+                                <div style={{ fontSize: 11, fontFamily: T.font }}>
+                                    <div style={{ fontWeight: 700, color: T.success, marginBottom: 3 }}>ðŸ“ Current Position</div>
+                                    <div style={{ fontFamily: T.mono, color: T.text }}>{latest.latitude?.toFixed(5)}Â°, {latest.longitude?.toFixed(5)}Â°</div>
+                                    {latest.position_datetime && <div style={{ color: T.textMuted, marginTop: 2, fontSize: 10 }}>{fmt(latest.position_datetime)}</div>}
+                                </div>
+                            </Popup>
+                        </Marker>
+                    )}
 
-                {/* Port markers */}
-                {pcs.filter(pc => pc.latitude && pc.longitude).map((pc, i) => {
-                    const isOrigin = pc.un_location_code === polCode
-                    const isDest = pc.un_location_code === podCode
-                    const c = isOrigin ? T.portColors.origin : isDest ? T.portColors.dest : T.portColors.mid
-                    const x = toX(pc.longitude), y = toY(pc.latitude)
-                    const labelY = i % 2 === 0 ? y - 12 : y + 16
-                    return (
-                        <g key={`port-${i}`}>
-                            <circle cx={x} cy={y} r="6" fill="#fff" stroke={c} strokeWidth="2.5" />
-                            <circle cx={x} cy={y} r="2.5" fill={c} />
-                            <text x={x} y={labelY} textAnchor="middle" fontSize="8" fontWeight="600" fill={c} fontFamily={T.font}>
-                                {pc.port_name || pc.un_location_code}
-                            </text>
-                        </g>
-                    )
-                })}
+                    {/* Port markers */}
+                    {pcs.filter(pc => pc.latitude && pc.longitude).map((pc, idx) => {
+                        const isOrigin = pc.un_location_code === polCode
+                        const isDest = pc.un_location_code === podCode
+                        const c = isOrigin ? T.portColors.origin : isDest ? T.portColors.dest : T.portColors.mid
+                        const sz = (isOrigin || isDest) ? 14 : 10
+                        return (
+                            <Marker key={`port-${idx}`}
+                                position={[pc.latitude, pc.longitude]}
+                                icon={L.divIcon({
+                                    className: '',
+                                    html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:#fff;border:2.5px solid ${c};box-shadow:0 0 6px ${c}60;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)"><div style="width:${sz - 6}px;height:${sz - 6}px;border-radius:50%;background:${c};position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)"></div></div>`,
+                                    iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2],
+                                })}
+                            >
+                                <Popup>
+                                    <div style={{ fontSize: 11, fontFamily: T.font, minWidth: 160 }}>
+                                        <div style={{ fontWeight: 700, fontSize: 12, color: T.text, marginBottom: 1 }}>ðŸš¢ {pc.port_name || pc.un_location_code}</div>
+                                        <div style={{ color: T.textMuted, fontSize: 10, marginBottom: 5 }}>{countryFlag(pc.un_location_code)} {pc.port_country || ''} Â· {pc.un_location_code}</div>
+                                        <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                            {pc.ata_datetime && <div style={{ fontSize: 10 }}><b style={{ color: T.textMuted }}>ATA</b> {fmt(pc.ata_datetime)}</div>}
+                                            {pc.atd_datetime && <div style={{ fontSize: 10 }}><b style={{ color: T.textMuted }}>ATD</b> {fmt(pc.atd_datetime)}</div>}
+                                            {pc.eta_datetime && <div style={{ fontSize: 10 }}><b style={{ color: T.warning }}>ETA</b> {fmt(pc.eta_datetime)}</div>}
+                                        </div>
+                                    </div>
+                                </Popup>
+                            </Marker>
+                        )
+                    })}
+                </MapContainer>
 
-                {/* Region label */}
-                <text x={W / 2} y={H / 2} textAnchor="middle" fontSize="10" fill="#93c5fd" opacity="0.4" fontStyle="italic" fontFamily={T.font}>
-                    {getSeaName(bounds)}
-                </text>
-            </svg>
+                {/* Legend overlay */}
+                <div style={{
+                    position: 'absolute', bottom: 10, right: 10, zIndex: 1000,
+                    padding: '6px 10px', borderRadius: T.r,
+                    background: 'rgba(255,255,255,0.92)', backdropFilter: 'blur(6px)',
+                    border: `1px solid ${T.border}`, boxShadow: T.shadow,
+                    fontSize: 9, display: 'flex', flexDirection: 'column', gap: 3,
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <div style={{ width: 14, height: 2.5, background: T.success, borderRadius: 2 }} />
+                        <span style={{ color: T.textMuted }}>Historic Route</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <div style={{ width: 14, height: 2.5, background: T.future, borderRadius: 2, borderTop: `1px dashed ${T.future}` }} />
+                        <span style={{ color: T.textMuted }}>Predicted Route</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <div style={{ width: 7, height: 7, borderRadius: '50%', background: T.success, boxShadow: `0 0 3px ${T.success}80` }} />
+                        <span style={{ color: T.textMuted }}>Current Position</span>
+                    </div>
+                </div>
+            </div>
         </div>
     )
 }
 
-function getSeaName(bounds) {
-    const cLat = (bounds.minLat + bounds.maxLat) / 2
-    const cLng = (bounds.minLng + bounds.maxLng) / 2
-    if (cLng > 95 && cLng < 125 && cLat > 0 && cLat < 25) return 'South China Sea'
-    if (cLng > 75 && cLng < 100 && cLat > -5 && cLat < 20) return 'Indian Ocean'
-    if (cLng > 55 && cLng < 75 && cLat > 10 && cLat < 30) return 'Arabian Sea'
-    if (cLng > 25 && cLng < 45 && cLat > 10 && cLat < 35) return 'Red Sea'
-    if (cLng > -10 && cLng < 40 && cLat > 30 && cLat < 50) return 'Mediterranean Sea'
-    if (cLng > -80 && cLng < -10 && cLat > 10 && cLat < 50) return 'Atlantic Ocean'
-    if (cLng > 120 && cLng < 180 && cLat > -50 && cLat < 10) return 'Pacific Ocean'
-    return 'Open Waters'
+/* Auto-fit map bounds to positions + ports */
+function FitBounds({ positions, portcalls }) {
+    const map = useMap()
+    useEffect(() => {
+        const pts = []
+        positions.forEach(p => { if (p.latitude && p.longitude) pts.push([p.latitude, p.longitude]) })
+        portcalls.forEach(pc => { if (pc.latitude && pc.longitude) pts.push([pc.latitude, pc.longitude]) })
+        if (pts.length > 1) map.fitBounds(L.latLngBounds(pts), { padding: [40, 40] })
+        else if (pts.length === 1) map.setView(pts[0], 8)
+    }, [positions, portcalls, map])
+    return null
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════════
+
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    AIS POSITION LOG TABLE
-   ═══════════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function AisTable({ leg, maxRows = 100 }) {
     const positions = leg?.positions || []
 
@@ -584,7 +599,7 @@ function AisTable({ leg, maxRows = 100 }) {
     return (
         <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.r, boxShadow: T.shadow, overflow: 'hidden' }}>
             <div style={{ padding: '8px 12px', borderBottom: `1px solid ${T.border}`, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textMuted, display: 'flex', justifyContent: 'space-between' }}>
-                <span>📡 AIS Position Log</span>
+                <span>ðŸ“¡ AIS Position Log</span>
                 <span style={{ fontWeight: 400, color: T.textLight }}>{positions.length} records</span>
             </div>
             <div style={{ maxHeight: 260, overflowY: 'auto' }}>
@@ -632,9 +647,9 @@ function AisTable({ leg, maxRows = 100 }) {
     )
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    MULTI-LEG VIEW
-   ═══════════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function MultiLegView({ legs, activeLeg, setActiveLeg }) {
     return (
         <>
@@ -671,13 +686,13 @@ function MultiLegView({ legs, activeLeg, setActiveLeg }) {
                                     LEG {i + 1}
                                 </span>
                                 <span style={{ fontSize: 10, color: T.textMuted }}>
-                                    {origin?.port_name || l.pol_un_location_code} → {dest?.port_name || l.pod_un_location_code}
+                                    {origin?.port_name || l.pol_un_location_code} â†’ {dest?.port_name || l.pod_un_location_code}
                                 </span>
                                 <span style={{
                                     fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 10,
                                     background: st.bg, color: st.color, border: `1px solid ${st.border}`,
                                 }}>
-                                    {l.state === 'PAST' ? '✓' : '⏳'} {l.state}
+                                    {l.state === 'PAST' ? 'âœ“' : 'â³'} {l.state}
                                 </span>
                             </div>
                             {/* Mini content */}
