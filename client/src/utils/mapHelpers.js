@@ -118,3 +118,37 @@ const SEGMENT_COLORS = [
 export function getSegmentColor(index) {
     return SEGMENT_COLORS[index % SEGMENT_COLORS.length]
 }
+
+// ─── SVG Coordinate Mapping ──────────────────────────────────────────────────
+
+/**
+ * Compute lon/lat bounds from positions + portcalls with padding
+ */
+export function computeBounds(positions, portcalls, padding = 5) {
+    const pts = []
+    positions.forEach(p => { if (p.latitude && p.longitude) pts.push(p) })
+    portcalls.forEach(p => { if (p.latitude && p.longitude) pts.push(p) })
+    if (!pts.length) return { minLng: 55, maxLng: 125, minLat: 0, maxLat: 35 }
+    let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity
+    for (const p of pts) {
+        if (p.longitude < minLng) minLng = p.longitude
+        if (p.longitude > maxLng) maxLng = p.longitude
+        if (p.latitude < minLat) minLat = p.latitude
+        if (p.latitude > maxLat) maxLat = p.latitude
+    }
+    return {
+        minLng: minLng - padding,
+        maxLng: maxLng + padding,
+        minLat: minLat - padding,
+        maxLat: maxLat + padding,
+    }
+}
+
+export function lngToX(lng, bounds, width) {
+    return ((lng - bounds.minLng) / (bounds.maxLng - bounds.minLng)) * width
+}
+
+export function latToY(lat, bounds, height) {
+    // Invert: high latitude = low y
+    return height - ((lat - bounds.minLat) / (bounds.maxLat - bounds.minLat)) * height
+}

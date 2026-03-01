@@ -1,6 +1,6 @@
 import { normalizeResponse } from '../utils/normalizeResponse'
 
-// ─── DCSA Event Type Code → Human-Readable Label ──────────────────────────────
+// ─── DCSA Event 
 const EVENT_CODE_LABELS = {
     ARRI: 'Arrived',
     DEPA: 'Departed',

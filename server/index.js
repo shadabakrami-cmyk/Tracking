@@ -5,9 +5,14 @@ const fetch = require("node-fetch");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+const LOCAL_PORT = process.env.LOCAL_PORT || 4001;
 
 app.use(cors({
-  origin: "https://oceantracking.netlify.app",
+  origin: [
+    "https://oceantracking.netlify.app",
+    "http://localhost:3000",
+    "http://localhost:3001",
+  ],
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   credentials: true
 }));

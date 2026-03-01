@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-const API_URL = 'https://tracking-bgr2.onrender.com/api'
+const API_URL = import.meta.env.VITE_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:4000/api' : 'https://tracking-bgr2.onrender.com/api')
 
 export default function AuthScreen({ onConnect }) {
     const [userId, setUserId] = useState('')

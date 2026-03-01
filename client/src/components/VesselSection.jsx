@@ -1,961 +1,700 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
-import L from 'leaflet'
-import 'leaflet/dist/leaflet.css'
-import { MapContainer, TileLayer, Polyline, CircleMarker, Marker, Popup, useMap } from 'react-leaflet'
-import { douglasPeucker, bearing, segmentVoyage, getSegmentColor } from '../utils/mapHelpers'
+import { useState, useMemo } from 'react'
+import { douglasPeucker, segmentVoyage, computeBounds, lngToX, latToY } from '../utils/mapHelpers'
 
-const API_URL = 'https://tracking-bgr2.onrender.com/api'
+const API_URL = import.meta.env.VITE_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:4000/api' : 'https://tracking-bgr2.onrender.com/api')
 
-// ─── Helpers ────────────────────────────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════════════════════════
+   DESIGN TOKENS
+   ═══════════════════════════════════════════════════════════════════════════════ */
+const T = {
+    bg: '#f1f5f9', card: '#ffffff', border: '#e2e8f0',
+    shadow: '0 1px 4px rgba(0,0,0,0.05)',
+    primary: '#0369a1', success: '#16a34a', warning: '#d97706', future: '#2563eb',
+    text: '#0f172a', textMuted: '#64748b', textLight: '#94a3b8',
+    font: "'Segoe UI', system-ui, -apple-system, sans-serif",
+    mono: "'Segoe UI Mono', 'SF Mono', 'Consolas', monospace",
+    past: { bg: '#dcfce7', color: '#16a34a', border: '#bbf7d0' },
+    fut: { bg: '#eff6ff', color: '#2563eb', border: '#bfdbfe' },
+    portColors: { origin: '#3b82f6', mid: '#22c55e', dest: '#a855f7' },
+    r: '6px',
+}
 
-function fmtDate(d) {
-    if (!d) return null
+/* ═══════════════════════════════════════════════════════════════════════════════
+   HELPERS
+   ═══════════════════════════════════════════════════════════════════════════════ */
+function fmt(d) {
+    if (!d) return '—'
     try {
-        return new Date(d).toLocaleString('en-US', {
-            month: 'short', day: 'numeric', year: 'numeric',
-            hour: '2-digit', minute: '2-digit',
-        })
+        return new Date(d).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
     } catch { return d }
 }
-
-function stateLabel(s) {
-    if (s === 'PAST') return { text: 'Completed', color: '#059669', bg: 'rgba(5,150,105,0.1)', border: 'rgba(5,150,105,0.2)' }
-    if (s === 'ONGOING') return { text: 'In Transit', color: '#d97706', bg: 'rgba(217,119,6,0.1)', border: 'rgba(217,119,6,0.2)' }
-    if (s === 'FUTURE') return { text: 'Scheduled', color: '#6366f1', bg: 'rgba(99,102,241,0.1)', border: 'rgba(99,102,241,0.2)' }
-    return { text: s || '—', color: 'var(--text-muted)', bg: 'rgba(0,0,0,0.04)', border: 'var(--border-glass)' }
+function fmtShort(d) {
+    if (!d) return '—'
+    try { return new Date(d).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) } catch { return d }
 }
-
-/** Get the earliest meaningful timestamp from a portcall for sorting */
-function getPortcallSortDate(pc) {
-    const d = pc.ata_datetime || pc.atd_datetime || pc.eta_datetime || pc.sta_datetime || pc.etd_datetime || pc.std_datetime
+function sortDate(pc) {
+    const d = pc.ata_datetime || pc.atd_datetime || pc.eta_datetime || pc.sta_datetime
     return d ? new Date(d).getTime() : Infinity
 }
-
-/** Find the portcall whose un_location_code matches the given code */
-function findPortByCode(portcalls, code) {
-    if (!code || !portcalls.length) return null
-    return portcalls.find(pc => pc.un_location_code === code) || null
+function dwell(pc) {
+    if (!pc.ata_datetime || !pc.atd_datetime) return null
+    const ms = new Date(pc.atd_datetime) - new Date(pc.ata_datetime)
+    if (ms < 0) return null
+    const h = Math.floor(ms / 3600000)
+    const m = Math.round((ms % 3600000) / 60000)
+    return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+function journeyTime(start, end) {
+    if (!start || !end) return '—'
+    const ms = new Date(end) - new Date(start)
+    if (ms < 0) return '—'
+    const d = Math.floor(ms / 86400000)
+    const h = Math.floor((ms % 86400000) / 3600000)
+    return d > 0 ? `${d}d ${h}h` : `${h}h`
+}
+function findPort(pcs, code) {
+    return pcs.find(pc => pc.un_location_code === code) || null
+}
+function countryFlag(code) {
+    if (!code || code.length < 2) return ''
+    const c = code.slice(0, 2).toUpperCase()
+    return String.fromCodePoint(...[...c].map(ch => 0x1F1E6 + ch.charCodeAt(0) - 65))
 }
 
-// ─── Component ──────────────────────────────────────────────────────────────────
-
+/* ═══════════════════════════════════════════════════════════════════════════════
+   COMPONENT
+   ═══════════════════════════════════════════════════════════════════════════════ */
 export default function VesselSection({ auth }) {
     const [transportId, setTransportId] = useState('')
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
     const [data, setData] = useState(null)
     const [activeLeg, setActiveLeg] = useState(0)
-    const [vesselDetailsOpen, setVesselDetailsOpen] = useState(false)
-    const [timelineOpen, setTimelineOpen] = useState(true)
-    const [rawJsonOpen, setRawJsonOpen] = useState(false)
-    const [focusedPort, setFocusedPort] = useState(null)
-    const [highlightSegment, setHighlightSegment] = useState(null)
-    const [playing, setPlaying] = useState(false)
-    const [playSpeed, setPlaySpeed] = useState(1)
-    const [timeCursor, setTimeCursor] = useState(1)  // 0-1 ratio
-    const playRef = useRef(null)
-
-    const mapRef = useRef(null)
 
     const handleFetch = async (e) => {
         e.preventDefault()
-        const trimmed = transportId.trim()
-        if (!trimmed) return
-        setLoading(true)
-        setError('')
-        setData(null)
-        setActiveLeg(0)
-        setVesselDetailsOpen(false)
-        setRawJsonOpen(false)
-        setFocusedPort(null)
+        const id = transportId.trim()
+        if (!id) return
+        setLoading(true); setError(''); setData(null); setActiveLeg(0)
         try {
-            const res = await fetch(
-                `${API_URL}/vessel-track?id=${trimmed}&token=${auth.token}&apiKey=${auth.apiKey}`
-            )
+            const res = await fetch(`${API_URL}/vessel-track?id=${id}&token=${auth.token}&apiKey=${auth.apiKey}`)
             const json = await res.json()
             if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`)
             setData(json)
-        } catch (err) {
-            setError(err.message)
-        } finally {
-            setLoading(false)
-        }
+        } catch (err) { setError(err.message) }
+        finally { setLoading(false) }
     }
 
     const legs = data?.transport_tracks || []
+    const isMultiLeg = legs.length > 1
     const leg = legs[activeLeg] || null
-    const vessel = leg?.vessel || {}
-    const positions = leg?.positions || []
-
-    // Sort portcalls chronologically
-    const portcalls = useMemo(() => {
-        const raw = leg?.portcalls || []
-        return [...raw].sort((a, b) => getPortcallSortDate(a) - getPortcallSortDate(b))
-    }, [leg])
-
-    const historicPositions = useMemo(() => positions.filter(p => p.tag === 'historic'), [positions])
-    const predictedPositions = useMemo(() => positions.filter(p => p.tag === 'predicted'), [positions])
-    const latestPosition = useMemo(() => positions.find(p => p.tag === 'latest') || null, [positions])
-
-    // ── Correct origin / destination lookup by UN location code ──
-    const origin = useMemo(() => findPortByCode(portcalls, leg?.pol_un_location_code), [portcalls, leg])
-    const destination = useMemo(() => findPortByCode(portcalls, leg?.pod_un_location_code), [portcalls, leg])
-
-    // ── Voyage segments (port-to-port) ──
-    const voyageSegments = useMemo(() => segmentVoyage(historicPositions, portcalls), [historicPositions, portcalls])
-
-    // ── Time range for playback ──
-    const timeRange = useMemo(() => {
-        const allDated = positions.filter(p => p.position_datetime && p.tag !== 'predicted')
-        if (!allDated.length) return { min: 0, max: 0 }
-        const times = allDated.map(p => new Date(p.position_datetime).getTime())
-        return { min: Math.min(...times), max: Math.max(...times) }
-    }, [positions])
-
-    const timeCutoff = useMemo(() => {
-        if (!timeRange.max) return Infinity
-        return timeRange.min + (timeRange.max - timeRange.min) * timeCursor
-    }, [timeRange, timeCursor])
-
-    // ── Playback animation ──
-    useEffect(() => {
-        if (playing) {
-            playRef.current = setInterval(() => {
-                setTimeCursor(prev => {
-                    const next = prev + 0.003 * playSpeed
-                    if (next >= 1) { setPlaying(false); return 1 }
-                    return next
-                })
-            }, 30)
-        } else {
-            clearInterval(playRef.current)
-        }
-        return () => clearInterval(playRef.current)
-    }, [playing, playSpeed])
-
-    // Reset playback when leg changes
-    useEffect(() => { setTimeCursor(1); setPlaying(false); setHighlightSegment(null) }, [activeLeg])
-
-    const flyToPort = useCallback((pc, idx) => {
-        setFocusedPort(idx)
-        // Highlight the segment departing from this port
-        setHighlightSegment(prev => prev === idx ? null : idx)
-        if (mapRef.current && pc.latitude && pc.longitude) {
-            mapRef.current.flyTo([pc.latitude, pc.longitude], 10, { duration: 1 })
-        }
-    }, [])
 
     return (
-        <div className="flex-1 flex flex-col min-h-0" style={{ animation: 'fadeIn 0.4s ease-out' }}>
-            {/* ═══ Input Bar ═══ */}
-            <div className="shrink-0 max-w-4xl mx-auto w-full px-6 pt-5 pb-4">
-                <div className="flex items-center gap-3 mb-3">
-                    <div style={{
-                        width: '30px', height: '30px', borderRadius: '9px',
-                        background: 'var(--gradient-brand)',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                    }}>
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M2 21c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1s1.2 1 2.5 1c2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" />
-                            <path d="M19.38 20A11.5 11.5 0 0 0 21 12l-9-4-9 4c0 5 2 8 4.62 10" />
-                            <path d="M12 2v8" />
-                        </svg>
-                    </div>
-                    <div>
-                        <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: "'Outfit', sans-serif" }}>
-                            Vessel Journey Tracker
-                        </div>
-                        <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
-                            Enter a Transport ID to view the vessel's route, ports, and position
-                        </div>
-                    </div>
-                </div>
-
-                <form onSubmit={handleFetch} className="flex gap-3">
-                    <div className="flex-1 relative">
-                        <span className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }}>
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                            </svg>
-                        </span>
+        <div style={{ flex: 1, background: T.bg, fontFamily: T.font, fontSize: '12px', color: T.text, overflowY: 'auto' }}>
+            {/* ──── Input Bar ──── */}
+            <div style={{ maxWidth: 600, margin: '20px auto 0', padding: '0 16px' }}>
+                <form onSubmit={handleFetch} style={{ display: 'flex', gap: '8px' }}>
+                    <div style={{ position: 'relative', flex: 1 }}>
+                        <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: T.textLight, fontSize: 14 }}>🔍</span>
                         <input
-                            type="text"
-                            value={transportId}
-                            onChange={e => setTransportId(e.target.value)}
-                            placeholder="e.g. 6667207"
-                            className="w-full pl-10 pr-4 py-3 rounded-xl text-sm transition-all duration-200 outline-none"
+                            value={transportId} onChange={e => setTransportId(e.target.value)}
+                            placeholder="Transport ID, e.g. 6667207"
                             style={{
-                                background: 'rgba(255,255,255,0.9)',
-                                border: '1px solid var(--border-glass)',
-                                color: 'var(--text-primary)',
+                                width: '100%', padding: '8px 8px 8px 32px', borderRadius: T.r,
+                                border: `1px solid ${T.border}`, fontSize: 12, fontFamily: T.font,
+                                background: '#fff', outline: 'none', color: T.text,
                             }}
-                            onFocus={e => { e.target.style.borderColor = 'rgba(59,130,246,0.5)'; e.target.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)' }}
-                            onBlur={e => { e.target.style.borderColor = 'var(--border-glass)'; e.target.style.boxShadow = 'none' }}
                         />
                     </div>
-                    <button type="submit" disabled={loading || !transportId.trim()} className="px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-300 cursor-pointer shrink-0" style={{
-                        background: loading ? 'rgba(0,0,0,0.06)' : 'var(--gradient-btn)',
-                        color: loading ? 'var(--text-muted)' : '#fff',
-                        boxShadow: loading ? 'none' : '0 4px 12px rgba(59,130,246,0.3)',
-                        cursor: loading ? 'not-allowed' : 'pointer',
+                    <button type="submit" disabled={loading || !transportId.trim()} style={{
+                        padding: '8px 18px', borderRadius: T.r, border: 'none', cursor: 'pointer',
+                        background: T.primary, color: '#fff', fontSize: 11, fontWeight: 600,
+                        opacity: (loading || !transportId.trim()) ? 0.5 : 1,
                     }}>
-                        {loading ? (
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: 'spin 1s linear infinite' }}>
-                                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                            </svg>
-                        ) : 'Fetch Track'}
+                        {loading ? '⏳' : 'Fetch'}
                     </button>
                 </form>
-
-                {error && (
-                    <div className="mt-3 flex items-center gap-2" style={{
-                        padding: '10px 14px', borderRadius: '10px', fontSize: '12px',
-                        background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.15)', color: '#dc2626',
-                    }}>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}>
-                            <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
-                        </svg>
-                        {error}
-                    </div>
-                )}
+                {error && <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: T.r, background: '#fef2f2', border: '1px solid #fecaca', color: '#dc2626', fontSize: 11 }}>⚠ {error}</div>}
             </div>
 
-            {/* ═══ Data ═══ */}
-            {data && leg && (
-                <div className="flex-1 flex flex-col min-h-0" style={{ borderTop: '1px solid var(--border-glass)' }}>
+            {/* ──── Loading ──── */}
+            {loading && <div style={{ textAlign: 'center', padding: 40, color: T.textMuted }}>Loading vessel data...</div>}
 
-                    {/* ─── 1. Summary Card ─── */}
-                    <div className="shrink-0" style={{ background: 'rgba(255,255,255,0.55)', borderBottom: '1px solid var(--border-glass)' }}>
-                        <div className="max-w-6xl mx-auto px-6 py-4">
-                            {/* Leg switcher */}
-                            {legs.length > 1 && (
-                                <div className="flex gap-1.5 mb-3 flex-wrap">
-                                    {legs.map((l, i) => (
-                                        <button key={i} onClick={() => { setActiveLeg(i); setFocusedPort(null) }} className="transition-all duration-200 cursor-pointer" style={{
-                                            padding: '4px 12px', borderRadius: '8px', fontSize: '11px', fontWeight: 600,
-                                            border: `1px solid ${activeLeg === i ? 'rgba(59,130,246,0.4)' : 'var(--border-glass)'}`,
-                                            background: activeLeg === i ? 'rgba(59,130,246,0.08)' : 'transparent',
-                                            color: activeLeg === i ? '#3b82f6' : 'var(--text-muted)',
-                                        }}>
-                                            Leg {i + 1} — {l.vessel?.vessel_name || 'Unknown'}
-                                        </button>
-                                    ))}
-                                </div>
-                            )}
-
-                            <div className="flex items-center gap-4 flex-wrap">
-                                {/* Status Badge */}
-                                {(() => {
-                                    const st = stateLabel(leg.state)
-                                    const isTransit = leg.state === 'ONGOING'
-                                    return (
-                                        <span style={{
-                                            padding: '5px 14px', borderRadius: '20px',
-                                            fontSize: '12px', fontWeight: 700,
-                                            background: st.bg, color: st.color,
-                                            border: `1px solid ${st.border}`,
-                                            letterSpacing: '0.02em',
-                                            animation: isTransit ? 'pulse-glow 2s ease-in-out infinite' : 'none',
-                                        }}>{st.text}</span>
-                                    )
-                                })()}
-
-                                {/* Vessel Name */}
-                                <div>
-                                    <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)', fontFamily: "'Outfit', sans-serif" }}>
-                                        {vessel.vessel_name || 'Unknown Vessel'}
-                                    </div>
-                                    {vessel.vessel_imo_number && (
-                                        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                                            IMO {vessel.vessel_imo_number}
-                                            {vessel.vessel_mmsi_number && ` · MMSI ${vessel.vessel_mmsi_number}`}
-                                        </div>
-                                    )}
-                                </div>
-
-                                {/* Route: Origin → Destination (matched by pol/pod code) */}
-                                <div className="flex items-center gap-2 ml-auto" style={{ fontSize: '14px', color: 'var(--text-primary)' }}>
-                                    <div className="text-right">
-                                        <div style={{ fontWeight: 700 }}>{origin?.port_name || leg.pol_un_location_code || '—'}</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500 }}>{leg.pol_un_location_code || ''}</div>
-                                    </div>
-                                    <div style={{
-                                        display: 'flex', alignItems: 'center', gap: '3px',
-                                        color: 'var(--accent-blue)', fontWeight: 700, fontSize: '16px',
-                                        padding: '0 4px',
-                                    }}>
-                                        <div style={{ width: '14px', height: '2px', background: 'var(--accent-blue)', borderRadius: '1px' }} />
-                                        {/* Ship icon between the route */}
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.8 }}>
-                                            <path d="M2 21c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1s1.2 1 2.5 1c2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" />
-                                            <path d="M19.38 20A11.5 11.5 0 0 0 21 12l-9-4-9 4c0 5 2 8 4.62 10" />
-                                        </svg>
-                                        <div style={{ width: '14px', height: '2px', background: 'var(--accent-blue)', borderRadius: '1px' }} />
-                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                                            <path d="M5 12h14M12 5l7 7-7 7" />
-                                        </svg>
-                                    </div>
-                                    <div>
-                                        <div style={{ fontWeight: 700 }}>{destination?.port_name || leg.pod_un_location_code || '—'}</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500 }}>{leg.pod_un_location_code || ''}</div>
-                                    </div>
-                                </div>
-
-                                {/* Key Dates */}
-                                <div className="flex gap-4 ml-4" style={{ fontSize: '11px' }}>
-                                    {leg.start_datetime && (
-                                        <div>
-                                            <div style={{ fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: '9px', marginBottom: '1px' }}>Departed</div>
-                                            <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{fmtDate(leg.start_datetime)}</div>
-                                        </div>
-                                    )}
-                                    {leg.end_datetime && (
-                                        <div>
-                                            <div style={{ fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: '9px', marginBottom: '1px' }}>Arrived</div>
-                                            <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{fmtDate(leg.end_datetime)}</div>
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* ─── 1b. HUD Telemetry Strip ─── */}
-                    <div className="shrink-0" style={{ background: 'rgba(248,250,252,0.7)', borderBottom: '1px solid var(--border-glass)' }}>
-                        <div className="max-w-6xl mx-auto px-6 py-2.5 flex gap-3 flex-wrap">
-                            {[
-                                { label: '⚡ SOG', value: vessel.vessel_sog != null ? `${vessel.vessel_sog} kn` : '—' },
-                                { label: '🧭 COG', value: vessel.vessel_cog != null ? `${vessel.vessel_cog}°` : '—' },
-                                { label: '📍 Position', value: latestPosition ? `${latestPosition.latitude?.toFixed(4)}, ${latestPosition.longitude?.toFixed(4)}` : '—', mono: true },
-                                { label: '📊 Track', value: `${historicPositions.length} hist · ${latestPosition ? 1 : 0} live · ${predictedPositions.length} pred` },
-                                { label: '🚢 Ports', value: `${portcalls.filter(pc => pc.atd_datetime).length}/${portcalls.length} called` },
-                            ].map((item, i) => (
-                                <div key={i} style={{
-                                    padding: '6px 14px', borderRadius: '8px',
-                                    background: 'rgba(255,255,255,0.8)',
-                                    border: '1px solid var(--border-glass)',
-                                    display: 'flex', alignItems: 'center', gap: '6px',
-                                }}>
-                                    <span style={{ fontSize: '9px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                                        {item.label}
-                                    </span>
-                                    <span style={{
-                                        fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)',
-                                        fontFamily: item.mono ? "'IBM Plex Mono', monospace" : 'inherit',
-                                    }}>
-                                        {item.value}
-                                    </span>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-
-                    {/* ─── 2 & 3. Map + Timeline ─── */}
-                    <div className="flex-1 flex min-h-0">
-                        {/* LEFT: Collapsible Vertical Timeline Sidebar */}
-                        <div style={{
-                            width: timelineOpen ? '300px' : '48px',
-                            flexShrink: 0,
-                            borderRight: '1px solid var(--border-glass)',
-                            background: 'rgba(255,255,255,0.5)',
-                            overflowY: timelineOpen ? 'auto' : 'hidden',
-                            overflowX: 'hidden',
-                            display: 'flex', flexDirection: 'column',
-                            transition: 'width 0.3s cubic-bezier(0.16,1,0.3,1)',
-                        }}>
-                            {/* Timeline header with toggle */}
-                            <button
-                                onClick={() => setTimelineOpen(v => !v)}
-                                style={{
-                                    padding: timelineOpen ? '12px 16px' : '12px 0',
-                                    display: 'flex', alignItems: 'center', gap: '8px',
-                                    border: 'none', background: 'transparent',
-                                    cursor: 'pointer', flexShrink: 0,
-                                    width: '100%',
-                                    justifyContent: timelineOpen ? 'flex-start' : 'center',
-                                    transition: 'all 0.2s',
-                                }}
-                                onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,0,0,0.02)'}
-                                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                            >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2"
-                                    style={{ transform: timelineOpen ? 'rotate(0)' : 'rotate(180deg)', transition: 'transform 0.3s', flexShrink: 0 }}>
-                                    <polyline points="15 18 9 12 15 6" />
-                                </svg>
-                                {timelineOpen && (
-                                    <span style={{
-                                        fontSize: '10px', fontWeight: 700, textTransform: 'uppercase',
-                                        letterSpacing: '0.1em', color: 'var(--text-muted)',
-                                        fontFamily: "'Outfit', sans-serif",
-                                        whiteSpace: 'nowrap',
-                                    }}>
-                                        Journey Timeline
-                                    </span>
-                                )}
-                            </button>
-
-                            {/* Port cards (hidden when collapsed) */}
-                            {timelineOpen && (
-                                <div style={{ padding: '0 16px 16px', flex: 1 }}>
-                                    {portcalls.map((pc, i) => {
-                                        const isDone = !!pc.atd_datetime
-                                        const isLast = i === portcalls.length - 1
-                                        const dotColor = isDone ? '#059669' : '#94a3b8'
-                                        const dotBorder = isDone ? '#059669' : '#cbd5e1'
-                                        const isFocused = focusedPort === i
-
-                                        return (
-                                            <div key={i} style={{ display: 'flex', gap: '12px', position: 'relative' }}>
-                                                {/* Timeline track */}
-                                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '18px', flexShrink: 0 }}>
-                                                    <div style={{
-                                                        width: '12px', height: '12px', borderRadius: '50%',
-                                                        background: isDone ? dotColor : 'transparent',
-                                                        border: `2.5px solid ${dotBorder}`,
-                                                        marginTop: '14px', flexShrink: 0,
-                                                        boxShadow: isDone ? `0 0 8px ${dotColor}40` : 'none',
-                                                        transition: 'all 0.3s',
-                                                    }} />
-                                                    {!isLast && (
-                                                        <div style={{
-                                                            width: '2px', flex: 1, minHeight: '16px',
-                                                            background: isDone
-                                                                ? 'linear-gradient(to bottom, #059669, #05966940)'
-                                                                : 'linear-gradient(to bottom, #cbd5e1, #e2e8f0)',
-                                                        }} />
-                                                    )}
-                                                </div>
-
-                                                {/* Port info card */}
-                                                <button
-                                                    onClick={() => flyToPort(pc, i)}
-                                                    style={{
-                                                        flex: 1, marginBottom: '4px',
-                                                        padding: '10px 12px', borderRadius: '10px',
-                                                        background: isFocused ? 'rgba(59,130,246,0.06)' : 'rgba(255,255,255,0.7)',
-                                                        border: '1px solid',
-                                                        borderColor: isFocused ? 'rgba(59,130,246,0.3)' : 'var(--border-glass)',
-                                                        borderLeft: isFocused ? '3px solid #3b82f6' : '1px solid var(--border-glass)',
-                                                        textAlign: 'left', cursor: 'pointer',
-                                                        transition: 'all 0.2s',
-                                                        boxShadow: isFocused ? '0 2px 10px rgba(59,130,246,0.08)' : 'none',
-                                                    }}
-                                                    onMouseEnter={e => {
-                                                        if (!isFocused) {
-                                                            e.currentTarget.style.background = 'rgba(59,130,246,0.04)'
-                                                            e.currentTarget.style.borderColor = 'rgba(59,130,246,0.2)'
-                                                            e.currentTarget.style.borderLeft = '3px solid rgba(59,130,246,0.3)'
-                                                            e.currentTarget.style.boxShadow = '0 2px 8px rgba(59,130,246,0.06)'
-                                                        }
-                                                    }}
-                                                    onMouseLeave={e => {
-                                                        if (!isFocused) {
-                                                            e.currentTarget.style.background = 'rgba(255,255,255,0.7)'
-                                                            e.currentTarget.style.borderColor = 'var(--border-glass)'
-                                                            e.currentTarget.style.borderLeft = '1px solid var(--border-glass)'
-                                                            e.currentTarget.style.boxShadow = 'none'
-                                                        }
-                                                    }}
-                                                >
-                                                    <div className="flex items-center gap-2 mb-1">
-                                                        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
-                                                            {pc.port_name || pc.un_location_code}
-                                                        </span>
-                                                        <span style={{
-                                                            fontSize: '9px', fontWeight: 600,
-                                                            padding: '1px 5px', borderRadius: '4px',
-                                                            background: isDone ? 'rgba(5,150,105,0.08)' : 'rgba(0,0,0,0.04)',
-                                                            color: isDone ? '#059669' : 'var(--text-muted)',
-                                                        }}>
-                                                            {pc.un_location_code}
-                                                        </span>
-                                                    </div>
-                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '10px', color: 'var(--text-secondary)' }}>
-                                                        {pc.ata_datetime && (
-                                                            <div><span style={{ color: 'var(--text-muted)', fontWeight: 600, width: '28px', display: 'inline-block' }}>ATA</span> {fmtDate(pc.ata_datetime)}</div>
-                                                        )}
-                                                        {pc.atd_datetime && (
-                                                            <div><span style={{ color: 'var(--text-muted)', fontWeight: 600, width: '28px', display: 'inline-block' }}>ATD</span> {fmtDate(pc.atd_datetime)}</div>
-                                                        )}
-                                                        {!isDone && pc.eta_datetime && (
-                                                            <div><span style={{ color: '#f59e0b', fontWeight: 600, width: '28px', display: 'inline-block' }}>ETA</span> {fmtDate(pc.eta_datetime)}</div>
-                                                        )}
-                                                        {!isDone && pc.sta_datetime && !pc.eta_datetime && (
-                                                            <div><span style={{ color: '#f59e0b', fontWeight: 600, width: '28px', display: 'inline-block' }}>STA</span> {fmtDate(pc.sta_datetime)}</div>
-                                                        )}
-                                                    </div>
-                                                </button>
-                                            </div>
-                                        )
-                                    })}
-                                </div>
-                            )}
-                        </div>
-
-                        {/* RIGHT: Map (main focus) */}
-                        <div className="flex-1 relative" style={{ minHeight: '450px' }}>
-                            <MapContainer
-                                center={[15, 90]}
-                                zoom={3}
-                                style={{ position: 'absolute', inset: 0 }}
-                                zoomControl={true}
-                                ref={mapRef}
-                            >
-                                <TileLayer
-                                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                                    attribution='&copy; OpenStreetMap contributors'
-                                    maxZoom={19}
-                                />
-
-                                <FitBoundsHelper positions={positions} portcalls={portcalls} />
-
-                                {/* ── Segmented + Simplified + Directional Historic Route ── */}
-                                {voyageSegments.map((seg, si) => {
-                                    const color = getSegmentColor(si)
-                                    // Time-filter the positions
-                                    const filtered = seg.positions.filter(p => {
-                                        if (!p.position_datetime) return true
-                                        return new Date(p.position_datetime).getTime() <= timeCutoff
-                                    })
-                                    if (filtered.length < 2) return null
-                                    // Douglas-Peucker simplification
-                                    const rawCoords = filtered.map(p => [p.latitude, p.longitude])
-                                    const simplified = douglasPeucker(rawCoords, 0.005)
-                                    // Opacity: full if no highlight or this is highlighted, dimmed otherwise
-                                    const opacity = highlightSegment === null || highlightSegment === si ? 0.9 : 0.15
-                                    const weight = highlightSegment === si ? 4.5 : 3.5
-                                    return (
-                                        <span key={`seg-${si}`}>
-                                            <Polyline positions={simplified} pathOptions={{ color, weight, opacity }} />
-                                            {/* Directional arrows every ~8th point */}
-                                            {simplified.filter((_, i) => i > 0 && i % 8 === 0).map((coord, ai) => {
-                                                const prev = simplified[Math.max(0, (ai + 1) * 8 - 1)]
-                                                const angle = bearing(prev[0], prev[1], coord[0], coord[1])
-                                                return (
-                                                    <Marker key={`arr-${si}-${ai}`}
-                                                        position={coord}
-                                                        icon={L.divIcon({
-                                                            className: '',
-                                                            html: `<svg width="14" height="14" viewBox="0 0 24 24" style="transform:rotate(${angle}deg);opacity:${opacity}" fill="${color}" xmlns="http://www.w3.org/2000/svg"><path d="M12 2l8 18H4z"/></svg>`,
-                                                            iconSize: [14, 14], iconAnchor: [7, 7],
-                                                        })}
-                                                    />
-                                                )
-                                            })}
-                                        </span>
-                                    )
-                                })}
-
-                                {/* Predicted polyline (amber dashed) — also time-filtered */}
-                                {(() => {
-                                    if (timeCursor < 1) return null  // Hide predicted while scrubbing
-                                    const coords = []
-                                    if (latestPosition) coords.push([latestPosition.latitude, latestPosition.longitude])
-                                    predictedPositions.forEach(p => coords.push([p.latitude, p.longitude]))
-                                    if (coords.length < 2) return null
-                                    const simplified = douglasPeucker(coords, 0.005)
-                                    return (
-                                        <>
-                                            <Polyline positions={simplified} pathOptions={{ color: '#f59e0b', weight: 3, opacity: 0.7, dashArray: '10 6' }} />
-                                            {simplified.filter((_, i) => i > 0 && i % 6 === 0).map((coord, ai) => {
-                                                const prev = simplified[Math.max(0, (ai + 1) * 6 - 1)]
-                                                const angle = bearing(prev[0], prev[1], coord[0], coord[1])
-                                                return (
-                                                    <Marker key={`parr-${ai}`}
-                                                        position={coord}
-                                                        icon={L.divIcon({
-                                                            className: '',
-                                                            html: `<svg width="12" height="12" viewBox="0 0 24 24" style="transform:rotate(${angle}deg);opacity:0.6" fill="#f59e0b" xmlns="http://www.w3.org/2000/svg"><path d="M12 2l8 18H4z"/></svg>`,
-                                                            iconSize: [12, 12], iconAnchor: [6, 6],
-                                                        })}
-                                                    />
-                                                )
-                                            })}
-                                        </>
-                                    )
-                                })()}
-
-                                {/* Latest position (green dot) */}
-                                {latestPosition && (
-                                    <Marker
-                                        position={[latestPosition.latitude, latestPosition.longitude]}
-                                        icon={L.divIcon({
-                                            className: '',
-                                            html: '<div style="width:16px;height:16px;border-radius:50%;background:#10b981;border:3px solid #fff;box-shadow:0 0 12px rgba(16,185,129,0.6);position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)"></div>',
-                                            iconSize: [16, 16], iconAnchor: [8, 8],
-                                        })}
-                                    >
-                                        <Popup>
-                                            <div style={{ fontSize: '12px', fontFamily: "'Inter',sans-serif" }}>
-                                                <div style={{ fontWeight: 700, color: '#10b981', marginBottom: 4 }}>📍 Current Position</div>
-                                                <div style={{ color: '#334155' }}>{latestPosition.latitude?.toFixed(5)}°, {latestPosition.longitude?.toFixed(5)}°</div>
-                                                {latestPosition.position_datetime && (
-                                                    <div style={{ color: '#64748b', marginTop: 3, fontSize: 11 }}>{fmtDate(latestPosition.position_datetime)}</div>
-                                                )}
-                                            </div>
-                                        </Popup>
-                                    </Marker>
-                                )}
-
-                                {/* Port markers */}
-                                {portcalls.filter(pc => pc.latitude && pc.longitude).map((pc, idx) => {
-                                    const isDone = !!pc.atd_datetime
-                                    const isEdge = idx === 0 || idx === portcalls.length - 1
-                                    const sz = isEdge ? 14 : 10
-                                    const color = isDone ? '#059669' : '#f59e0b'
-                                    return (
-                                        <Marker key={`port-${idx}`}
-                                            position={[pc.latitude, pc.longitude]}
-                                            icon={L.divIcon({
-                                                className: '',
-                                                html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${color};border:2.5px solid #fff;box-shadow:0 0 8px ${color}80"></div>`,
-                                                iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2],
-                                            })}
-                                        >
-                                            <Popup>
-                                                <div style={{ fontSize: 12, fontFamily: "'Inter',sans-serif", minWidth: 180 }}>
-                                                    <div style={{ fontWeight: 700, fontSize: 13, color: '#0f172a', marginBottom: 2 }}>🚢 {pc.port_name || pc.un_location_code}</div>
-                                                    <div style={{ color: '#64748b', fontSize: 11, marginBottom: 6 }}>{pc.port_country || ''} · {pc.un_location_code || ''}</div>
-                                                    <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                                                        {pc.ata_datetime && <div style={{ fontSize: 11 }}><b style={{ color: '#64748b' }}>ATA</b> {fmtDate(pc.ata_datetime)}</div>}
-                                                        {pc.atd_datetime && <div style={{ fontSize: 11 }}><b style={{ color: '#64748b' }}>ATD</b> {fmtDate(pc.atd_datetime)}</div>}
-                                                        {pc.eta_datetime && <div style={{ fontSize: 11 }}><b style={{ color: '#f59e0b' }}>ETA</b> {fmtDate(pc.eta_datetime)}</div>}
-                                                    </div>
-                                                </div>
-                                            </Popup>
-                                        </Marker>
-                                    )
-                                })}
-                            </MapContainer>
-
-                            {/* Map Legend */}
-                            <div style={{
-                                position: 'absolute', bottom: '16px', right: '16px', zIndex: 1000,
-                                padding: '10px 14px', borderRadius: '10px',
-                                background: 'rgba(255,255,255,0.93)', backdropFilter: 'blur(8px)',
-                                border: '1px solid var(--border-glass)',
-                                boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
-                                fontSize: '10px', display: 'flex', flexDirection: 'column', gap: '5px',
-                            }}>
-                                <div className="flex items-center gap-2">
-                                    <div style={{ width: '16px', height: '3px', background: '#06b6d4', borderRadius: '2px' }} />
-                                    <span style={{ color: 'var(--text-secondary)' }}>Historic Route</span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <div style={{ width: '16px', height: '3px', background: '#f59e0b', borderRadius: '2px', borderTop: '1px dashed #f59e0b' }} />
-                                    <span style={{ color: 'var(--text-secondary)' }}>Predicted Route</span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981', boxShadow: '0 0 4px rgba(16,185,129,0.5)' }} />
-                                    <span style={{ color: 'var(--text-secondary)' }}>Current Position</span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#059669', border: '2px solid #fff', boxShadow: '0 0 3px rgba(0,0,0,0.2)' }} />
-                                    <span style={{ color: 'var(--text-secondary)' }}>Port (Completed)</span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#f59e0b', border: '2px solid #fff', boxShadow: '0 0 3px rgba(0,0,0,0.2)' }} />
-                                    <span style={{ color: 'var(--text-secondary)' }}>Port (Upcoming)</span>
-                                </div>
-                            </div>
-
-                            {/* Raw JSON toggle button (bottom-left) */}
-                            <button
-                                onClick={() => setRawJsonOpen(v => !v)}
-                                title="Toggle Raw JSON"
-                                style={{
-                                    position: 'absolute', bottom: rawJsonOpen ? '320px' : '16px', left: '16px', zIndex: 1001,
-                                    width: '36px', height: '36px', borderRadius: '10px',
-                                    background: rawJsonOpen ? 'var(--gradient-brand)' : 'rgba(255,255,255,0.93)',
-                                    backdropFilter: 'blur(8px)',
-                                    border: rawJsonOpen ? 'none' : '1px solid var(--border-glass)',
-                                    boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
-                                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    color: rawJsonOpen ? '#fff' : 'var(--text-muted)',
-                                    transition: 'all 0.3s',
-                                    fontSize: '14px', fontWeight: 800,
-                                    fontFamily: "'JetBrains Mono', monospace",
-                                }}
-                            >
-                                { }
-                            </button>
-
-                            {/* Raw JSON Panel (bottom-left, expands upward) */}
-                            {rawJsonOpen && (
-                                <div style={{
-                                    position: 'absolute', bottom: '16px', left: '16px', zIndex: 1000,
-                                    width: '420px', maxHeight: '300px',
-                                    borderRadius: '12px',
-                                    background: '#1e293b',
-                                    border: '1px solid rgba(255,255,255,0.1)',
-                                    boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
-                                    display: 'flex', flexDirection: 'column',
-                                    overflow: 'hidden',
-                                    animation: 'slideUp 0.25s ease-out',
-                                }}>
-                                    <div style={{
-                                        padding: '10px 14px',
-                                        borderBottom: '1px solid rgba(255,255,255,0.08)',
-                                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                                        flexShrink: 0,
-                                    }}>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#94a3b8' }}>
-                                            Raw API Response
-                                        </span>
-                                        <button
-                                            onClick={() => setRawJsonOpen(false)}
-                                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b', padding: '2px', display: 'flex' }}
-                                        >
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                                            </svg>
-                                        </button>
-                                    </div>
-                                    <pre style={{
-                                        flex: 1, overflowY: 'auto', margin: 0,
-                                        padding: '12px 14px',
-                                        fontSize: '10px',
-                                        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                                        color: '#94a3b8',
-                                        whiteSpace: 'pre-wrap',
-                                        wordBreak: 'break-word',
-                                        lineHeight: 1.5,
-                                    }}>
-                                        {JSON.stringify(data, null, 2)}
-                                    </pre>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-
-                    {/* ─── Time-Series Playback Slider ─── */}
-                    {timeRange.max > 0 && (
-                        <div className="shrink-0" style={{
-                            borderTop: '1px solid var(--border-glass)',
-                            background: 'rgba(248,250,252,0.8)',
-                            padding: '10px 24px',
-                        }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                {/* Play / Pause */}
-                                <button onClick={() => {
-                                    if (timeCursor >= 1) setTimeCursor(0)
-                                    setPlaying(v => !v)
-                                }} style={{
-                                    width: '30px', height: '30px', borderRadius: '8px',
-                                    background: playing ? 'rgba(239,68,68,0.1)' : 'var(--gradient-brand)',
-                                    border: playing ? '1px solid rgba(239,68,68,0.2)' : 'none',
-                                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    color: playing ? '#ef4444' : '#fff', flexShrink: 0,
-                                    boxShadow: playing ? 'none' : '0 2px 8px rgba(59,130,246,0.3)',
-                                }}>
-                                    {playing ? (
-                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
-                                    ) : (
-                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21" /></svg>
-                                    )}
-                                </button>
-
-                                {/* Reset */}
-                                <button onClick={() => { setTimeCursor(0); setPlaying(false) }} title="Reset" style={{
-                                    width: '28px', height: '28px', borderRadius: '7px',
-                                    background: 'rgba(0,0,0,0.04)', border: '1px solid var(--border-glass)',
-                                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    color: 'var(--text-muted)', flexShrink: 0,
-                                }}>
-                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
-                                </button>
-
-                                {/* Speed toggle */}
-                                <button onClick={() => setPlaySpeed(s => s === 1 ? 3 : s === 3 ? 6 : 1)} style={{
-                                    padding: '3px 10px', borderRadius: '6px', fontSize: '10px', fontWeight: 700,
-                                    background: playSpeed > 1 ? 'rgba(59,130,246,0.08)' : 'rgba(0,0,0,0.04)',
-                                    border: `1px solid ${playSpeed > 1 ? 'rgba(59,130,246,0.3)' : 'var(--border-glass)'}`,
-                                    color: playSpeed > 1 ? '#3b82f6' : 'var(--text-muted)',
-                                    cursor: 'pointer', flexShrink: 0,
-                                }}>
-                                    {playSpeed}×
-                                </button>
-
-                                {/* Slider */}
-                                <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span style={{ fontSize: '9px', color: 'var(--text-muted)', fontWeight: 600, whiteSpace: 'nowrap', fontFamily: "'IBM Plex Mono', monospace" }}>
-                                        {fmtDate(new Date(timeRange.min).toISOString())?.split(',')[0] || ''}
-                                    </span>
-                                    <input
-                                        type="range" min="0" max="1" step="0.001"
-                                        value={timeCursor}
-                                        onChange={e => { setTimeCursor(parseFloat(e.target.value)); setPlaying(false) }}
-                                        style={{
-                                            flex: 1, height: '6px',
-                                            WebkitAppearance: 'none', appearance: 'none',
-                                            borderRadius: '3px',
-                                            background: `linear-gradient(to right, #3b82f6 0%, #06b6d4 ${timeCursor * 100}%, #e2e8f0 ${timeCursor * 100}%)`,
-                                            outline: 'none', cursor: 'pointer',
-                                        }}
-                                    />
-                                    <span style={{ fontSize: '9px', color: 'var(--text-muted)', fontWeight: 600, whiteSpace: 'nowrap', fontFamily: "'IBM Plex Mono', monospace" }}>
-                                        {fmtDate(new Date(timeRange.max).toISOString())?.split(',')[0] || ''}
-                                    </span>
-                                </div>
-
-                                {/* Current date label */}
-                                <div style={{
-                                    padding: '3px 10px', borderRadius: '6px',
-                                    background: 'rgba(59,130,246,0.08)',
-                                    border: '1px solid rgba(59,130,246,0.15)',
-                                    fontSize: '10px', fontWeight: 700, color: '#3b82f6',
-                                    fontFamily: "'IBM Plex Mono', monospace",
-                                    whiteSpace: 'nowrap', flexShrink: 0,
-                                }}>
-                                    {fmtDate(new Date(timeCutoff).toISOString()) || '—'}
-                                </div>
-
-                                {/* Show all / clear segment */}
-                                {highlightSegment !== null && (
-                                    <button onClick={() => setHighlightSegment(null)} style={{
-                                        padding: '3px 10px', borderRadius: '6px', fontSize: '10px', fontWeight: 600,
-                                        background: 'rgba(0,0,0,0.04)', border: '1px solid var(--border-glass)',
-                                        color: 'var(--text-muted)', cursor: 'pointer', flexShrink: 0,
-                                    }}>
-                                        Show All
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* ─── 4. Collapsible Vessel Details ─── */}
-                    <div className="shrink-0" style={{ borderTop: '1px solid var(--border-glass)', background: 'rgba(255,255,255,0.55)' }}>
-                        <button
-                            onClick={() => setVesselDetailsOpen(v => !v)}
-                            className="w-full flex items-center gap-2 transition-colors duration-200 cursor-pointer"
-                            style={{
-                                padding: '12px 24px', fontSize: '12px', fontWeight: 600,
-                                color: 'var(--text-muted)', background: 'transparent', border: 'none',
-                                textAlign: 'left',
-                            }}
-                            onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,0,0,0.02)'}
-                            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                        >
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                                style={{ transform: vesselDetailsOpen ? 'rotate(90deg)' : 'rotate(0)', transition: 'transform 0.2s' }}>
-                                <polyline points="9 18 15 12 9 6" />
-                            </svg>
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M2 21c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1s1.2 1 2.5 1c2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" />
-                                <path d="M19.38 20A11.5 11.5 0 0 0 21 12l-9-4-9 4c0 5 2 8 4.62 10" />
-                            </svg>
-                            Vessel Details
-                            <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: 400, marginLeft: '4px' }}>
-                                — {vessel.vessel_name || 'N/A'}
-                            </span>
-                        </button>
-
-                        {vesselDetailsOpen && (
-                            <div style={{
-                                padding: '0 24px 16px',
-                                animation: 'slideUp 0.2s ease-out',
-                            }}>
-                                <div style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-                                    gap: '8px',
-                                }}>
-                                    {[
-                                        { label: 'Vessel Name', value: vessel.vessel_name },
-                                        { label: 'IMO Number', value: vessel.vessel_imo_number },
-                                        { label: 'MMSI Number', value: vessel.vessel_mmsi_number },
-                                        { label: 'Country', value: vessel.vessel_country_code },
-                                        { label: 'Type', value: vessel.vessel_type },
-                                        { label: 'Speed (SOG)', value: vessel.vessel_sog != null ? `${vessel.vessel_sog} knots` : null },
-                                        { label: 'Heading (COG)', value: vessel.vessel_cog != null ? `${vessel.vessel_cog}°` : null },
-                                        { label: 'Length', value: vessel.vessel_length != null ? `${vessel.vessel_length} m` : null },
-                                        { label: 'Width', value: vessel.vessel_width != null ? `${vessel.vessel_width} m` : null },
-                                        { label: 'Draught', value: vessel.vessel_draught != null ? `${vessel.vessel_draught} m` : null },
-                                        { label: 'Year Built', value: vessel.vessel_year_built },
-                                        { label: 'Navigation Status', value: vessel.vessel_navigation_status },
-                                    ].filter(item => item.value != null).map((item, i) => (
-                                        <div key={i} style={{
-                                            padding: '10px 12px', borderRadius: '8px',
-                                            background: 'rgba(255,255,255,0.7)',
-                                            border: '1px solid var(--border-glass)',
-                                        }}>
-                                            <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '2px' }}>
-                                                {item.label}
-                                            </div>
-                                            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                                                {item.value}
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-                    </div>
+            {/* ──── Data Loaded ──── */}
+            {data && leg && !loading && (
+                <div style={{ padding: '12px 16px', maxWidth: 1200, margin: '0 auto' }}>
+                    <TopBar leg={leg} legs={legs} data={data} />
+                    {isMultiLeg && <JourneyStepper legs={legs} activeLeg={activeLeg} setActiveLeg={setActiveLeg} />}
+                    {isMultiLeg
+                        ? <MultiLegView legs={legs} activeLeg={activeLeg} setActiveLeg={setActiveLeg} />
+                        : <SingleLegView leg={leg} />
+                    }
                 </div>
             )}
 
-            {/* ═══ Empty state ═══ */}
+            {/* ──── Empty state ──── */}
             {!data && !loading && !error && (
-                <div className="flex-1 flex items-center justify-center" style={{ animation: 'fadeIn 0.5s ease-out' }}>
-                    <div style={{ textAlign: 'center', maxWidth: '320px' }}>
-                        <div style={{
-                            width: '64px', height: '64px', borderRadius: '20px',
-                            background: 'rgba(59,130,246,0.06)',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            margin: '0 auto 16px',
-                        }}>
-                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}>
-                                <path d="M2 21c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1s1.2 1 2.5 1c2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" />
-                                <path d="M19.38 20A11.5 11.5 0 0 0 21 12l-9-4-9 4c0 5 2 8 4.62 10" />
-                                <path d="M12 2v8" />
-                            </svg>
-                        </div>
-                        <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '6px' }}>
-                            Track a Vessel Journey
-                        </div>
-                        <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                            Enter a Transport ID above to view the vessel's route, port calls, and live position on the map.
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* ═══ Loading ═══ */}
-            {loading && (
-                <div className="flex-1 flex items-center justify-center">
-                    <div style={{ textAlign: 'center' }}>
-                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" strokeWidth="2" style={{ animation: 'spin 1s linear infinite', margin: '0 auto 12px' }}>
-                            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                        </svg>
-                        <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Fetching transport track data...</div>
-                    </div>
+                <div style={{ textAlign: 'center', padding: '60px 20px', color: T.textMuted }}>
+                    <div style={{ fontSize: 36, marginBottom: 8 }}>⚓</div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: T.text, marginBottom: 4 }}>Vessel Journey Tracker</div>
+                    <div>Enter a Transport ID above to view the vessel's route, ports, and position.</div>
                 </div>
             )}
         </div>
     )
 }
 
-// ─── Map helper: auto-fit bounds ────────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════════════════════════
+   TOP BAR
+   ═══════════════════════════════════════════════════════════════════════════════ */
+function TopBar({ leg, legs, data }) {
+    const v = leg?.vessel || {}
+    const state = leg?.state
+    const isComplete = state === 'PAST'
+    const pc = leg?.portcalls || []
+    const sorted = [...pc].sort((a, b) => sortDate(a) - sortDate(b))
+    const origin = findPort(sorted, leg?.pol_un_location_code) || sorted[0]
+    const dest = findPort(sorted, leg?.pod_un_location_code) || sorted[sorted.length - 1]
 
-function FitBoundsHelper({ positions, portcalls }) {
-    const map = useMap()
+    const divider = <div style={{ width: 1, height: 20, background: T.border, flexShrink: 0 }} />
 
-    useEffect(() => {
+    return (
+        <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px',
+            background: T.card, border: `1px solid ${T.border}`, borderRadius: T.r,
+            boxShadow: T.shadow, marginBottom: 10, flexWrap: 'wrap',
+        }}>
+            <span style={{ fontWeight: 700, fontSize: 13, color: T.primary, whiteSpace: 'nowrap' }}>⚓ VesselTrack</span>
+            {divider}
+            <span style={{ fontSize: 11, color: T.textMuted }}>Shipment <b style={{ color: T.text }}>{data?.shipment_id || data?.transport_document_reference || '—'}</b></span>
+            {divider}
+            <span style={{ fontSize: 11, color: T.textMuted }}>Carrier <b style={{ color: T.text }}>{leg?.carrier_name || v?.carrier_code || '—'}</b></span>
+            {divider}
+            <span style={{ fontSize: 11, color: T.textMuted }}>
+                {origin?.port_name || leg?.pol_un_location_code || '?'} → {dest?.port_name || leg?.pod_un_location_code || '?'}
+            </span>
+            {v.vessel_country_code && <>
+                {divider}
+                <span style={{ fontSize: 13 }}>{countryFlag(v.vessel_country_code)}</span>
+            </>}
+            <div style={{ marginLeft: 'auto' }}>
+                <span style={{
+                    display: 'inline-block', padding: '3px 10px', borderRadius: 20, fontSize: 10, fontWeight: 700,
+                    background: isComplete ? T.past.bg : T.fut.bg,
+                    color: isComplete ? T.past.color : T.fut.color,
+                    border: `1px solid ${isComplete ? T.past.border : T.fut.border}`,
+                }}>
+                    {isComplete ? '✓ COMPLETED' : state === 'ONGOING' ? '⏳ IN TRANSIT' : '⏳ UPCOMING'}
+                </span>
+            </div>
+        </div>
+    )
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   JOURNEY STEPPER
+   ═══════════════════════════════════════════════════════════════════════════════ */
+function JourneyStepper({ legs, activeLeg, setActiveLeg }) {
+    // Collect all ports across all legs in order
+    const steps = []
+    legs.forEach((l, li) => {
+        const pcs = [...(l.portcalls || [])].sort((a, b) => sortDate(a) - sortDate(b))
+        pcs.forEach((pc, pi) => {
+            // avoid duplicate consecutive ports
+            if (steps.length && steps[steps.length - 1].code === pc.un_location_code) return
+            steps.push({ ...pc, legIdx: li, isPast: l.state === 'PAST', vessel: l.vessel?.vessel_name, legLabel: `Leg ${li + 1}` })
+        })
+    })
+
+    return (
+        <div style={{
+            background: T.card, border: `1px solid ${T.border}`, borderRadius: T.r,
+            boxShadow: T.shadow, marginBottom: 10, overflowX: 'auto', padding: '12px 16px',
+        }}>
+            <div style={{ display: 'flex', alignItems: 'center', minWidth: steps.length * 140 }}>
+                {steps.map((s, i) => {
+                    const isLast = i === steps.length - 1
+                    const dotColor = i === 0 ? T.portColors.origin : isLast ? T.portColors.dest : T.portColors.mid
+                    const nextIsPast = !isLast && steps[i + 1].isPast
+                    const lineColor = s.isPast && nextIsPast ? T.success : T.future
+                    const lineDash = s.isPast && nextIsPast ? 'none' : '4 3'
+                    return (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', flex: isLast ? '0 0 auto' : 1 }}>
+                            {/* Port dot + label */}
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 60, flexShrink: 0, cursor: 'pointer' }}
+                                onClick={() => setActiveLeg(s.legIdx)}>
+                                <div style={{
+                                    width: 16, height: 16, borderRadius: '50%', background: dotColor, border: '3px solid #fff',
+                                    boxShadow: `0 0 0 2px ${dotColor}40`, marginBottom: 4,
+                                }} />
+                                <div style={{ fontSize: 10, fontWeight: 600, color: T.text, textAlign: 'center', lineHeight: 1.2 }}>
+                                    {s.port_name || s.un_location_code}
+                                </div>
+                                <div style={{ fontSize: 8, color: dotColor, fontWeight: 600 }}>{s.un_location_code}</div>
+                                <div style={{ fontSize: 8, color: T.textLight }}>{fmtShort(s.ata_datetime || s.eta_datetime)}</div>
+                            </div>
+                            {/* Connecting line */}
+                            {!isLast && (
+                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', margin: '0 4px', minWidth: 40 }}>
+                                    <svg width="100%" height="6" style={{ overflow: 'visible' }}>
+                                        <line x1="0" y1="3" x2="100%" y2="3" stroke={lineColor} strokeWidth="2" strokeDasharray={lineDash} />
+                                    </svg>
+                                    {s.vessel && <div style={{ fontSize: 7, color: T.textLight, marginTop: 2, whiteSpace: 'nowrap' }}>{s.vessel}</div>}
+                                </div>
+                            )}
+                        </div>
+                    )
+                })}
+            </div>
+        </div>
+    )
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   STATS BAR
+   ═══════════════════════════════════════════════════════════════════════════════ */
+function StatsBar({ leg }) {
+    const v = leg?.vessel || {}
+    const pcs = leg?.portcalls || []
+    const pos = leg?.positions || []
+    const jt = journeyTime(leg?.start_datetime, leg?.end_datetime)
+    const size = v.vessel_length && v.vessel_width ? `${v.vessel_length}×${v.vessel_width}m` : '—'
+
+    const pills = [
+        { val: jt, label: 'Journey Time' },
+        { val: `${pcs.length}`, label: 'Port Calls' },
+        { val: size, label: 'Vessel Size' },
+        { val: `${pos.length}`, label: 'AIS Positions' },
+        { val: v.vessel_sog != null ? `${v.vessel_sog} kn` : '—', label: 'Speed (SOG)' },
+    ]
+
+    return (
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${pills.length}, 1fr)`, gap: 8, marginBottom: 10 }}>
+            {pills.map((p, i) => (
+                <div key={i} style={{
+                    background: T.card, border: `1px solid ${T.border}`, borderRadius: T.r,
+                    boxShadow: T.shadow, padding: '10px 12px', textAlign: 'center',
+                }}>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: T.primary }}>{p.val}</div>
+                    <div style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: T.textMuted, marginTop: 2 }}>{p.label}</div>
+                </div>
+            ))}
+        </div>
+    )
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   SINGLE-LEG VIEW (2-column)
+   ═══════════════════════════════════════════════════════════════════════════════ */
+function SingleLegView({ leg }) {
+    return (
+        <>
+            <StatsBar leg={leg} />
+            <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 10, alignItems: 'start' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <VesselInfoCard leg={leg} />
+                    <PortTimeline leg={leg} />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <SvgRouteMap leg={leg} wide />
+                    <AisTable leg={leg} />
+                </div>
+            </div>
+        </>
+    )
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   VESSEL INFO CARD
+   ═══════════════════════════════════════════════════════════════════════════════ */
+function VesselInfoCard({ leg, mini = false }) {
+    const v = leg?.vessel || {}
+    const rows = [
+        { label: 'Vessel Name', value: v.vessel_name, color: T.primary },
+        { label: 'IMO', value: v.vessel_imo_number },
+        { label: 'MMSI', value: v.vessel_mmsi_number },
+        { label: 'Call Sign', value: v.vessel_call_sign },
+        { label: 'Flag', value: v.vessel_country_code ? `${countryFlag(v.vessel_country_code)} ${v.vessel_country_code}` : null },
+        { label: 'Type', value: v.vessel_type },
+        { label: 'Length', value: v.vessel_length ? `${v.vessel_length} m` : null },
+        { label: 'Width', value: v.vessel_width ? `${v.vessel_width} m` : null },
+        { label: 'Speed (SOG)', value: v.vessel_sog != null ? `${v.vessel_sog} kn` : null },
+        { label: 'Course (COG)', value: v.vessel_cog != null ? `${v.vessel_cog}°` : null },
+        { label: 'Draught', value: v.vessel_draught ? `${v.vessel_draught} m` : null },
+        { label: 'Year Built', value: v.vessel_year_built },
+        { label: 'Nav Status', value: v.vessel_navigation_status },
+        { label: 'Carrier', value: leg?.carrier_name || v.carrier_code, color: T.success },
+    ].filter(r => r.value != null)
+
+    const display = mini ? rows.slice(0, 6) : rows
+
+    return (
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.r, boxShadow: T.shadow, overflow: 'hidden' }}>
+            <div style={{ padding: '8px 12px', borderBottom: `1px solid ${T.border}`, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textMuted }}>
+                🚢 Vessel Information
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
+                {display.map((r, i) => (
+                    <div key={i} style={{ padding: '6px 12px', borderBottom: `1px solid ${T.border}`, borderRight: i % 2 === 0 ? `1px solid ${T.border}` : 'none' }}>
+                        <div style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textMuted, marginBottom: 1 }}>{r.label}</div>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: r.color || T.text }}>{r.value}</div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    )
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   PORT CALL TIMELINE
+   ═══════════════════════════════════════════════════════════════════════════════ */
+function PortTimeline({ leg, mini = false }) {
+    const raw = leg?.portcalls || []
+    const pcs = useMemo(() => [...raw].sort((a, b) => sortDate(a) - sortDate(b)), [raw])
+    const polCode = leg?.pol_un_location_code
+    const podCode = leg?.pod_un_location_code
+
+    return (
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.r, boxShadow: T.shadow, overflow: 'hidden' }}>
+            <div style={{ padding: '8px 12px', borderBottom: `1px solid ${T.border}`, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textMuted }}>
+                📍 Port Call Timeline
+            </div>
+            <div style={{ padding: '8px 12px' }}>
+                {pcs.map((pc, i) => {
+                    const isFirst = i === 0
+                    const isLast = i === pcs.length - 1
+                    const isOrigin = pc.un_location_code === polCode
+                    const isDest = pc.un_location_code === podCode
+                    const dotColor = isOrigin ? T.portColors.origin : isDest ? T.portColors.dest : T.portColors.mid
+                    const isDocked = pc.ata_datetime && !pc.atd_datetime
+                    const dw = dwell(pc)
+                    const hasAnyDep = !!pc.atd_datetime
+
+                    return (
+                        <div key={i} style={{ display: 'flex', gap: 10, position: 'relative' }}>
+                            {/* Line + Dot */}
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 18, flexShrink: 0 }}>
+                                <div style={{
+                                    width: 12, height: 12, borderRadius: '50%',
+                                    background: hasAnyDep || isDocked ? dotColor : '#e2e8f0',
+                                    border: `2px solid ${dotColor}`, marginTop: 4, flexShrink: 0,
+                                    boxShadow: `0 0 0 3px ${dotColor}18`,
+                                }} />
+                                {!isLast && (
+                                    <div style={{
+                                        width: 2, flex: 1, minHeight: 14,
+                                        background: hasAnyDep ? `linear-gradient(${T.success}, ${T.success}80)` : `linear-gradient(${T.border}, ${T.border})`,
+                                    }} />
+                                )}
+                            </div>
+                            {/* Content */}
+                            <div style={{ flex: 1, paddingBottom: 8 }}>
+                                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 2 }}>
+                                    <span style={{ fontSize: 11, fontWeight: 700, color: dotColor }}>{pc.port_name || pc.un_location_code}</span>
+                                    <span style={{ fontSize: 9, fontWeight: 600, color: dotColor, opacity: 0.7 }}>{pc.un_location_code}</span>
+                                </div>
+                                {pc.port_country && (
+                                    <div style={{ fontSize: 9, color: T.textLight, marginBottom: 2 }}>
+                                        {countryFlag(pc.un_location_code)} {pc.port_country}
+                                        {pc.latitude && pc.longitude && <span style={{ fontFamily: T.mono, marginLeft: 6 }}>{pc.latitude.toFixed(2)}, {pc.longitude.toFixed(2)}</span>}
+                                    </div>
+                                )}
+                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 9 }}>
+                                    {pc.ata_datetime && <span><b style={{ color: T.textMuted }}>ATA</b> {fmt(pc.ata_datetime)}</span>}
+                                    {pc.atd_datetime && <span><b style={{ color: T.textMuted }}>ATD</b> {fmt(pc.atd_datetime)}</span>}
+                                    {!pc.ata_datetime && pc.eta_datetime && <span><b style={{ color: T.warning }}>ETA</b> {fmt(pc.eta_datetime)}</span>}
+                                    {dw && <span style={{ color: T.warning, fontWeight: 600 }}>⏱ {dw}</span>}
+                                    {isDocked && <span style={{ color: '#ea580c', fontWeight: 700 }}>🔶 Still Docked</span>}
+                                </div>
+                                {leg?.voyage_no && !mini && (
+                                    <span style={{
+                                        display: 'inline-block', marginTop: 3, padding: '1px 6px',
+                                        borderRadius: 3, fontSize: 8, fontFamily: T.mono,
+                                        background: '#f8fafc', border: `1px solid ${T.border}`, color: T.textMuted,
+                                    }}>
+                                        {leg.voyage_no}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                    )
+                })}
+            </div>
+        </div>
+    )
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   SVG ROUTE MAP
+   ═══════════════════════════════════════════════════════════════════════════════ */
+function SvgRouteMap({ leg, wide = false }) {
+    const positions = leg?.positions || []
+    const raw = leg?.portcalls || []
+    const pcs = useMemo(() => [...raw].sort((a, b) => sortDate(a) - sortDate(b)), [raw])
+    const polCode = leg?.pol_un_location_code
+    const podCode = leg?.pod_un_location_code
+
+    const W = wide ? 1100 : 540
+    const H = wide ? 340 : 200
+
+    const historic = positions.filter(p => p.tag === 'historic')
+    const predicted = positions.filter(p => p.tag === 'predicted')
+    const latest = positions.find(p => p.tag === 'latest')
+
+    const bounds = useMemo(() => computeBounds(positions, pcs, 3), [positions, pcs])
+
+    const toX = lng => lngToX(lng, bounds, W)
+    const toY = lat => latToY(lat, bounds, H)
+
+    // Simplify
+    const histCoords = useMemo(() => {
+        const pts = historic.filter(p => p.latitude && p.longitude).map(p => [p.latitude, p.longitude])
+        if (latest) pts.push([latest.latitude, latest.longitude])
+        return douglasPeucker(pts, 0.003)
+    }, [historic, latest])
+
+    const predCoords = useMemo(() => {
         const pts = []
-        positions.forEach(p => {
-            if (p.latitude && p.longitude) pts.push([p.latitude, p.longitude])
-        })
-        portcalls.forEach(pc => {
-            if (pc.latitude && pc.longitude) pts.push([pc.latitude, pc.longitude])
-        })
+        if (latest) pts.push([latest.latitude, latest.longitude])
+        predicted.filter(p => p.latitude && p.longitude).forEach(p => pts.push([p.latitude, p.longitude]))
+        return douglasPeucker(pts, 0.003)
+    }, [predicted, latest])
 
-        if (pts.length > 1) {
-            map.fitBounds(L.latLngBounds(pts), { padding: [60, 60] })
-        } else if (pts.length === 1) {
-            map.setView(pts[0], 8)
-        }
-    }, [positions, portcalls, map])
+    const histPath = histCoords.map(([lat, lng]) => `${toX(lng).toFixed(1)},${toY(lat).toFixed(1)}`).join(' ')
+    const predPath = predCoords.map(([lat, lng]) => `${toX(lng).toFixed(1)},${toY(lat).toFixed(1)}`).join(' ')
 
-    return null
+    // Waypoint dots along historic route (every 10th simplified point)
+    const waypoints = histCoords.filter((_, i) => i > 0 && i < histCoords.length - 1 && i % 4 === 0)
+
+    return (
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.r, boxShadow: T.shadow, overflow: 'hidden' }}>
+            <div style={{ padding: '8px 12px', borderBottom: `1px solid ${T.border}`, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textMuted, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>🗺️ Route Map</span>
+                <span style={{ fontSize: 8, fontWeight: 400, color: T.textLight }}>
+                    {bounds.minLng.toFixed(0)}°E – {bounds.maxLng.toFixed(0)}°E · {bounds.minLat.toFixed(0)}° – {bounds.maxLat.toFixed(0)}°
+                </span>
+            </div>
+            <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: 'block', background: '#e0f2fe' }}>
+                {/* Ocean grid */}
+                {Array.from({ length: 6 }).map((_, i) => (
+                    <line key={`g${i}`} x1={0} y1={H * i / 5} x2={W} y2={H * i / 5} stroke="#bae6fd" strokeWidth="0.5" strokeDasharray="4 4" />
+                ))}
+
+                {/* Historic route (solid green) */}
+                {histCoords.length > 1 && (
+                    <>
+                        <polyline points={histPath} fill="none" stroke={T.success} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                        {/* Animated ship along historic */}
+                        <text fontSize="14" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }}>
+                            <animateMotion dur={`${Math.max(4, histCoords.length * 0.3)}s`} repeatCount="indefinite"
+                                path={`M${histCoords.map(([lat, lng]) => `${toX(lng).toFixed(1)} ${toY(lat).toFixed(1)}`).join(' L ')}`} />
+                            🚢
+                        </text>
+                    </>
+                )}
+
+                {/* Waypoint dots */}
+                {waypoints.map(([lat, lng], i) => (
+                    <circle key={`wp${i}`} cx={toX(lng)} cy={toY(lat)} r="2" fill={T.success} opacity="0.4" />
+                ))}
+
+                {/* Predicted route (dashed blue) */}
+                {predCoords.length > 1 && (
+                    <>
+                        <polyline points={predPath} fill="none" stroke={T.future} strokeWidth="2" strokeDasharray="6 4" strokeLinecap="round" />
+                        <text fontSize="12" opacity="0.8">
+                            <animateMotion dur={`${Math.max(3, predCoords.length * 0.3)}s`} repeatCount="indefinite"
+                                path={`M${predCoords.map(([lat, lng]) => `${toX(lng).toFixed(1)} ${toY(lat).toFixed(1)}`).join(' L ')}`} />
+                            🚢
+                        </text>
+                    </>
+                )}
+
+                {/* Latest position glow */}
+                {latest && (
+                    <>
+                        <circle cx={toX(latest.longitude)} cy={toY(latest.latitude)} r="8" fill={T.success} opacity="0.15">
+                            <animate attributeName="r" values="6;12;6" dur="2s" repeatCount="indefinite" />
+                        </circle>
+                        <circle cx={toX(latest.longitude)} cy={toY(latest.latitude)} r="4" fill={T.success} stroke="#fff" strokeWidth="1.5" />
+                    </>
+                )}
+
+                {/* Port markers */}
+                {pcs.filter(pc => pc.latitude && pc.longitude).map((pc, i) => {
+                    const isOrigin = pc.un_location_code === polCode
+                    const isDest = pc.un_location_code === podCode
+                    const c = isOrigin ? T.portColors.origin : isDest ? T.portColors.dest : T.portColors.mid
+                    const x = toX(pc.longitude), y = toY(pc.latitude)
+                    const labelY = i % 2 === 0 ? y - 12 : y + 16
+                    return (
+                        <g key={`port-${i}`}>
+                            <circle cx={x} cy={y} r="6" fill="#fff" stroke={c} strokeWidth="2.5" />
+                            <circle cx={x} cy={y} r="2.5" fill={c} />
+                            <text x={x} y={labelY} textAnchor="middle" fontSize="8" fontWeight="600" fill={c} fontFamily={T.font}>
+                                {pc.port_name || pc.un_location_code}
+                            </text>
+                        </g>
+                    )
+                })}
+
+                {/* Region label */}
+                <text x={W / 2} y={H / 2} textAnchor="middle" fontSize="10" fill="#93c5fd" opacity="0.4" fontStyle="italic" fontFamily={T.font}>
+                    {getSeaName(bounds)}
+                </text>
+            </svg>
+        </div>
+    )
+}
+
+function getSeaName(bounds) {
+    const cLat = (bounds.minLat + bounds.maxLat) / 2
+    const cLng = (bounds.minLng + bounds.maxLng) / 2
+    if (cLng > 95 && cLng < 125 && cLat > 0 && cLat < 25) return 'South China Sea'
+    if (cLng > 75 && cLng < 100 && cLat > -5 && cLat < 20) return 'Indian Ocean'
+    if (cLng > 55 && cLng < 75 && cLat > 10 && cLat < 30) return 'Arabian Sea'
+    if (cLng > 25 && cLng < 45 && cLat > 10 && cLat < 35) return 'Red Sea'
+    if (cLng > -10 && cLng < 40 && cLat > 30 && cLat < 50) return 'Mediterranean Sea'
+    if (cLng > -80 && cLng < -10 && cLat > 10 && cLat < 50) return 'Atlantic Ocean'
+    if (cLng > 120 && cLng < 180 && cLat > -50 && cLat < 10) return 'Pacific Ocean'
+    return 'Open Waters'
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   AIS POSITION LOG TABLE
+   ═══════════════════════════════════════════════════════════════════════════════ */
+function AisTable({ leg, maxRows = 100 }) {
+    const positions = leg?.positions || []
+
+    const historic = positions.filter(p => p.tag === 'historic')
+    const predicted = positions.filter(p => p.tag === 'predicted')
+    const latest = positions.find(p => p.tag === 'latest')
+    const all = [...historic, ...(latest ? [latest] : []), ...predicted].slice(0, maxRows)
+
+    const thStyle = {
+        padding: '6px 8px', fontSize: 9, fontWeight: 700, textTransform: 'uppercase',
+        letterSpacing: '0.06em', color: T.textMuted, borderBottom: `2px solid ${T.border}`,
+        textAlign: 'left', position: 'sticky', top: 0, background: T.card,
+    }
+    const tdStyle = (i) => ({
+        padding: '5px 8px', fontSize: 10, borderBottom: `1px solid ${T.border}`,
+        background: i % 2 === 0 ? '#fff' : '#f8fafc',
+    })
+
+    return (
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.r, boxShadow: T.shadow, overflow: 'hidden' }}>
+            <div style={{ padding: '8px 12px', borderBottom: `1px solid ${T.border}`, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textMuted, display: 'flex', justifyContent: 'space-between' }}>
+                <span>📡 AIS Position Log</span>
+                <span style={{ fontWeight: 400, color: T.textLight }}>{positions.length} records</span>
+            </div>
+            <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                        <tr>
+                            <th style={thStyle}>#</th>
+                            <th style={thStyle}>Latitude</th>
+                            <th style={thStyle}>Longitude</th>
+                            <th style={thStyle}>Date/Time UTC</th>
+                            <th style={thStyle}>Context</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {all.map((p, i) => {
+                            const isH = p.tag === 'historic'
+                            const isP = p.tag === 'predicted'
+                            const isL = p.tag === 'latest'
+                            return (
+                                <tr key={i} style={{ transition: 'background 0.15s' }}
+                                    onMouseEnter={e => e.currentTarget.style.background = '#f1f5f9'}
+                                    onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? '#fff' : '#f8fafc'}>
+                                    <td style={tdStyle(i)}>{i + 1}</td>
+                                    <td style={{ ...tdStyle(i), fontFamily: T.mono, color: T.primary, fontWeight: 500 }}>{p.latitude?.toFixed(5)}</td>
+                                    <td style={{ ...tdStyle(i), fontFamily: T.mono, color: T.primary, fontWeight: 500 }}>{p.longitude?.toFixed(5)}</td>
+                                    <td style={tdStyle(i)}>{fmt(p.position_datetime)}</td>
+                                    <td style={tdStyle(i)}>
+                                        <span style={{
+                                            display: 'inline-block', padding: '1px 6px', borderRadius: 10, fontSize: 8, fontWeight: 600,
+                                            background: isH ? T.past.bg : isL ? '#fef3c7' : T.fut.bg,
+                                            color: isH ? T.past.color : isL ? T.warning : T.fut.color,
+                                            border: `1px solid ${isH ? T.past.border : isL ? '#fde68a' : T.fut.border}`,
+                                        }}>
+                                            {isH ? 'Historic' : isL ? 'Latest' : 'Predicted'}
+                                        </span>
+                                        {p.position_context && <span style={{ marginLeft: 4, color: T.textMuted }}>{p.position_context}</span>}
+                                    </td>
+                                </tr>
+                            )
+                        })}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    )
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   MULTI-LEG VIEW
+   ═══════════════════════════════════════════════════════════════════════════════ */
+function MultiLegView({ legs, activeLeg, setActiveLeg }) {
+    return (
+        <>
+            <StatsBar leg={legs[activeLeg]} />
+            {/* Leg cards side by side */}
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(legs.length, 3)}, 1fr)`, gap: 10, marginBottom: 10 }}>
+                {legs.map((l, i) => {
+                    const isFuture = l.state === 'FUTURE'
+                    const isActive = i === activeLeg
+                    const v = l.vessel || {}
+                    const pcs = [...(l.portcalls || [])].sort((a, b) => sortDate(a) - sortDate(b))
+                    const origin = findPort(pcs, l.pol_un_location_code) || pcs[0]
+                    const dest = findPort(pcs, l.pod_un_location_code) || pcs[pcs.length - 1]
+                    const st = l.state === 'PAST' ? T.past : T.fut
+
+                    return (
+                        <div key={i} onClick={() => setActiveLeg(i)} style={{
+                            background: T.card, borderRadius: T.r, boxShadow: T.shadow, overflow: 'hidden', cursor: 'pointer',
+                            border: isActive ? `2px solid ${T.primary}` : isFuture ? `1px solid ${T.fut.border}` : `1px solid ${T.border}`,
+                            opacity: isActive ? 1 : 0.85,
+                            transition: 'all 0.2s',
+                        }}>
+                            {/* Header */}
+                            <div style={{
+                                padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                background: isFuture ? '#eff6ff' : isActive ? '#f0f9ff' : '#f8fafc',
+                                borderBottom: `1px solid ${T.border}`,
+                            }}>
+                                <span style={{
+                                    fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 4,
+                                    background: i === 0 ? T.portColors.origin : i === legs.length - 1 ? T.portColors.dest : T.portColors.mid,
+                                    color: '#fff',
+                                }}>
+                                    LEG {i + 1}
+                                </span>
+                                <span style={{ fontSize: 10, color: T.textMuted }}>
+                                    {origin?.port_name || l.pol_un_location_code} → {dest?.port_name || l.pod_un_location_code}
+                                </span>
+                                <span style={{
+                                    fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 10,
+                                    background: st.bg, color: st.color, border: `1px solid ${st.border}`,
+                                }}>
+                                    {l.state === 'PAST' ? '✓' : '⏳'} {l.state}
+                                </span>
+                            </div>
+                            {/* Mini content */}
+                            <div style={{ padding: '8px 12px' }}>
+                                <VesselInfoCard leg={l} mini />
+                                <div style={{ marginTop: 8 }}><PortTimeline leg={l} mini /></div>
+                            </div>
+                        </div>
+                    )
+                })}
+            </div>
+
+            {/* Expanded active leg below */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <SvgRouteMap leg={legs[activeLeg]} wide />
+                <AisTable leg={legs[activeLeg]} />
+            </div>
+        </>
+    )
 }

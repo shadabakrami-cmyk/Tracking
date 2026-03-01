@@ -3,7 +3,7 @@ import DCSAView from './DCSAView'
 import VesselSection from './VesselSection'
 import { normalizeResponse } from '../utils/normalizeResponse'
 
-const API_URL = 'https://tracking-bgr2.onrender.com/api'
+const API_URL = import.meta.env.VITE_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:4000/api' : 'https://tracking-bgr2.onrender.com/api')
 
 const TABS = [
     { key: 'bl', label: 'Bill of Lading', placeholder: 'Enter Bill of Lading number' },
