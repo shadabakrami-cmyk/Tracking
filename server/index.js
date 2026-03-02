@@ -9,7 +9,7 @@ const LOCAL_PORT = process.env.LOCAL_PORT || 4001;
 
 app.use(cors({
   origin: [
-    "https://oceantracking.netlify.app",
+    "https://oceanstracking.vercel.app",
     "http://localhost:3000",
     "http://localhost:3001",
   ],
