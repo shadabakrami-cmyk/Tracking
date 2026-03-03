@@ -119,6 +119,40 @@ h6 {
   background: rgba(0, 0, 0, 0.2);
 }
 
+/* ─── Pulse animation for transit indicator ────────────────────────────── */
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.5;
+    transform: scale(0.85);
+  }
+}
+
+/* ─── Vessel payload scrollbar ─────────────────────────────────────────── */
+.vessel-payload-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.vessel-payload-scroll::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 8px 0;
+}
+
+.vessel-payload-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+}
+
+.vessel-payload-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.18);
+}
+
 /* ─── Selection ─────────────────────────────────────────────────────────── */
 ::selection {
   background: rgba(59, 130, 246, 0.2);
