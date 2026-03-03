@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 4000;
 app.use(cors({
   origin: [
     "https://oceanstracking.vercel.app",
+    "https://tracking-tau-flame.vercel.app",
     "http://localhost:3000",
     "http://localhost:3001",
   ],
