@@ -4,7 +4,7 @@ import 'leaflet/dist/leaflet.css'
 import { MapContainer, TileLayer, Polyline, CircleMarker, Marker, Popup, useMap } from 'react-leaflet'
 import { douglasPeucker, segmentVoyage } from '../utils/mapHelpers'
 
-const API_URL = import.meta.env.VITE_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:4000/api' : 'https://tracking-bgr2.onrender.com/api')
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
 
 // ---- DESIGN TOKENS ----
 const T = {

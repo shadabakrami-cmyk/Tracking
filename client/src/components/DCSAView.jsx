@@ -1,6 +1,6 @@
 import { normalizeResponse } from '../utils/normalizeResponse'
 
-// ─── DCSA Event 
+// DCSA Event Codes
 const EVENT_CODE_LABELS = {
     ARRI: 'Arrived',
     DEPA: 'Departed',
@@ -45,7 +45,7 @@ const TRANSPORT_CALL_TYPE_LABELS = {
     DEPOT_RETURN_LOCATION: 'Depot Return',
 }
 
-// ─── SVG Symbols ──────────────────────────────────────────────────────────────
+// SVG Icons
 
 function TransportIcon() {
     return (
@@ -160,7 +160,7 @@ const SELECTED_GLOW = {
     SHIPMENT: '0 0 16px rgba(139, 92, 246, 0.12), inset 0 1px 0 rgba(139, 92, 246, 0.08)',
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
 
 function getEventCode(event) {
     return (
@@ -198,7 +198,7 @@ function getModeIcon(mode) {
     return AnchorSvg
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+// Component
 
 export default function DCSAView({ data, selectedIndex, onSelectEvent, containerFilter = null }) {
     const parsed = normalizeResponse(data, containerFilter)

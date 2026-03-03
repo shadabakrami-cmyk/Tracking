@@ -1,23 +1,12 @@
-/**
- * Normalizes any Oceanio / DCSA-like API response into a standardized
- * array of DCSA events, regardless of the original response shape.
- *
- * Handles:
- *  - snake_case vs camelCase field names
- *  - Oceanio containers[].events nesting
- *  - Various response envelopes (events, data, results, items, root array)
- *  - Nested transport call / location / vessel structures
- *  - Missing or partial fields
- *  - Container filtering for multi-container responses
- */
+// Normalizes Oceanio / DCSA API responses into a standardized event array
 
-// ─── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
 function snakeToCamel(str) {
     return str.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
 }
 
-/** Recursively convert all keys in an object/array from snake_case to camelCase */
+// Recursively convert snake_case keys to camelCase
 function deepCamelCase(obj) {
     if (Array.isArray(obj)) return obj.map(deepCamelCase)
     if (obj !== null && typeof obj === 'object') {
@@ -28,17 +17,16 @@ function deepCamelCase(obj) {
     return obj
 }
 
-// ─── Event Extraction ──────────────────────────────────────────────────────────
+// Event Extraction
 
-/** Try every common envelope shape to find the events array */
+// Try every common envelope shape to find the events array
 function extractEventsArray(data) {
     if (!data) return []
 
     // Already an array at the top level
     if (Array.isArray(data)) return data
 
-    // ── Oceanio-specific: containers[].events ──
-    // The Oceanio API wraps events inside a containers array:
+    // Oceanio-specific: containers[].events
     // { containers: [{ equipmentReference, events: [...] }] }
     if (Array.isArray(data.containers)) {
         const all = []
@@ -73,7 +61,7 @@ function extractEventsArray(data) {
     return []
 }
 
-// ─── Single-Event Normalizer ───────────────────────────────────────────────────
+// Single-Event Normalizer
 
 function classifyEventType(evt) {
     // Explicit eventType
@@ -202,7 +190,7 @@ function normalizeEvent(raw) {
     }
 }
 
-// ─── Metadata Extraction ───────────────────────────────────────────────────────
+// Metadata Extraction
 
 function extractMetadata(data) {
     return {
@@ -213,9 +201,9 @@ function extractMetadata(data) {
     }
 }
 
-// ─── Container Extraction ──────────────────────────────────────────────────────
+// Container Extraction
 
-/** Extract per-container info from the Oceanio response */
+// Extract per-container info from the Oceanio response
 function extractContainers(data) {
     if (!data || !Array.isArray(data.containers)) return []
     return data.containers.map((c) => {
@@ -230,13 +218,9 @@ function extractContainers(data) {
     })
 }
 
-// ─── Main Export ───────────────────────────────────────────────────────────────
+// Main Export
 
-/**
- * @param {any} rawResponse  — raw JSON from Oceanio API
- * @param {string|null} containerFilter — optional equipment reference to filter
- * @returns {{ totalEvents, transportEvents, equipmentEvents, shipmentEvents, allEvents, metadata, containers }}
- */
+
 export function normalizeResponse(rawResponse, containerFilter = null) {
     // 1. Convert everything to camelCase so the rest of the pipeline is consistent
     const camel = deepCamelCase(rawResponse)

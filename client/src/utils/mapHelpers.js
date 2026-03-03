@@ -1,4 +1,4 @@
-// ─── Douglas-Peucker Path Simplification ────────────────────────────────────
+// Douglas-Peucker Path Simplification
 
 function perpendicularDistance(point, lineStart, lineEnd) {
     const dx = lineEnd[0] - lineStart[0]
@@ -26,7 +26,7 @@ export function douglasPeucker(points, epsilon = 0.005) {
     return [points[0], points[points.length - 1]]
 }
 
-// ─── Bearing Calculation ─────────────────────────────────────────────────────
+// Bearing Calculation
 
 export function bearing(lat1, lng1, lat2, lng2) {
     const toRad = d => d * Math.PI / 180
@@ -38,20 +38,15 @@ export function bearing(lat1, lng1, lat2, lng2) {
     return (toDeg(Math.atan2(y, x)) + 360) % 360
 }
 
-// ─── Voyage Segmentation ─────────────────────────────────────────────────────
+// Voyage Segmentation
 
-/**
- * Groups positions into port-to-port segments based on portcall timestamps.
- * @param {Array} positions - sorted by position_datetime
- * @param {Array} portcalls - sorted chronologically
- * @returns {Array<{from, to, positions, color}>}
- */
+// Groups positions into port-to-port segments based on portcall timestamps
 export function segmentVoyage(positions, portcalls) {
     if (!positions.length || portcalls.length < 2) {
         return [{ from: null, to: null, positions, segIndex: 0 }]
     }
 
-    // Build departure windows from portcall ATD timestamps
+
     const windows = []
     for (let i = 0; i < portcalls.length - 1; i++) {
         const departTime = portcalls[i].atd_datetime || portcalls[i].etd_datetime || portcalls[i].std_datetime
@@ -64,7 +59,7 @@ export function segmentVoyage(positions, portcalls) {
         })
     }
 
-    // Assign each position to a segment
+
     const segments = windows.map((w, i) => ({
         from: w.from,
         to: w.to,
@@ -102,7 +97,7 @@ export function segmentVoyage(positions, portcalls) {
     return segments.filter(s => s.positions.length > 0)
 }
 
-// ─── Segment Color Palette ───────────────────────────────────────────────────
+// Segment Colors
 
 const SEGMENT_COLORS = [
     '#38bdf8', // sky-400
@@ -119,11 +114,9 @@ export function getSegmentColor(index) {
     return SEGMENT_COLORS[index % SEGMENT_COLORS.length]
 }
 
-// ─── SVG Coordinate Mapping ──────────────────────────────────────────────────
+// SVG Coordinate Mapping
 
-/**
- * Compute lon/lat bounds from positions + portcalls with padding
- */
+// Compute lon/lat bounds from positions + portcalls with padding
 export function computeBounds(positions, portcalls, padding = 5) {
     const pts = []
     positions.forEach(p => { if (p.latitude && p.longitude) pts.push(p) })

@@ -5,7 +5,6 @@ const fetch = require("node-fetch");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const LOCAL_PORT = process.env.LOCAL_PORT || 4001;
 
 app.use(cors({
   origin: [
@@ -18,7 +17,7 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// ─── Auth Token ────────────────────────────────────────────────────────────────
+// Auth Token
 app.post("/api/auth/token", async (req, res) => {
   const { userId, password, apiKey } = req.body;
 
@@ -45,7 +44,7 @@ app.post("/api/auth/token", async (req, res) => {
   }
 });
 
-// ─── Track ─────────────────────────────────────────────────────────────────────
+// Shipment Track
 const TRACK_URLS = {
   bl: (ref) =>
     `https://api.oceanio.com/v2/transports/bill_of_lading_number/${encodeURIComponent(ref)}/events`,
@@ -89,7 +88,7 @@ app.get("/api/track", async (req, res) => {
   }
 });
 
-// ─── Vessel Track ──────────────────────────────────────────────────────────────
+// Vessel Track
 app.get("/api/vessel-track", async (req, res) => {
   const { id, token, apiKey } = req.query;
 
@@ -117,7 +116,7 @@ app.get("/api/vessel-track", async (req, res) => {
   }
 });
 
-// ─── Start ─────────────────────────────────────────────────────────────────────
+// Start
 app.listen(PORT, () => {
   console.log(`Oceanio proxy server running on http://localhost:${PORT}`);
 });
