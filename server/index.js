@@ -117,6 +117,33 @@ app.get("/api/vessel-track", async (req, res) => {
   }
 });
 
+// Air Cargo Track
+app.get("/api/cargo-track", async (req, res) => {
+  const { awb, rapidApiKey } = req.query;
+
+  if (!awb || !rapidApiKey) {
+    return res.status(400).json({ error: "awb and rapidApiKey are required." });
+  }
+
+  try {
+    const upstream = await fetch(
+      `https://air-cargo-co2-track-and-trace.p.rapidapi.com/track?awb=${encodeURIComponent(awb)}`,
+      {
+        headers: {
+          "X-Rapidapi-Key": rapidApiKey,
+          "X-Rapidapi-Host": "air-cargo-co2-track-and-trace.p.rapidapi.com",
+        },
+      }
+    );
+
+    const data = await upstream.json();
+    return res.status(upstream.status).json(data);
+  } catch (err) {
+    console.error("Cargo track proxy error:", err.message);
+    return res.status(502).json({ error: "Failed to reach Air Cargo tracking endpoint." });
+  }
+});
+
 // Start
 app.listen(PORT, () => {
   console.log(`Oceanio proxy server running on http://localhost:${PORT}`);

@@ -47,7 +47,7 @@ export default function AuthScreen({ onConnect }) {
     }
 
     return (
-        <div className="min-h-screen flex items-center justify-center px-4 relative overflow-hidden">
+        <div className="flex-1 flex items-center justify-center px-4 relative overflow-hidden">
             {/* Animated background orbs */}
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
                 <div

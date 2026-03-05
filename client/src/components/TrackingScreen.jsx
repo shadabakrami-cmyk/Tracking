@@ -165,35 +165,7 @@ export default function TrackingScreen({ auth, onDisconnect }) {
     }
 
     return (
-        <div className="min-h-screen flex flex-col" style={{ background: 'linear-gradient(145deg, var(--bg-primary), var(--bg-secondary))' }}>
-            {/* Navigation Bar */}
-            <nav className="px-6 py-3 flex items-center justify-between shrink-0"
-                style={{
-                    background: 'rgba(255, 255, 255, 0.85)',
-                    borderBottom: '1px solid var(--border-glass)',
-                    backdropFilter: 'blur(12px)',
-                }}>
-                <span className="text-lg font-bold tracking-tight"
-                    style={{ fontFamily: "'Outfit', sans-serif", background: 'var(--gradient-brand)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-                    Oceanio Tracker
-                </span>
-                <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"
-                            style={{ animation: 'pulse-glow 2s ease-in-out infinite' }} />
-                        Connected
-                    </div>
-                    <button
-                        onClick={onDisconnect}
-                        className="text-xs transition-colors duration-200 cursor-pointer"
-                        style={{ color: 'var(--text-muted)' }}
-                        onMouseEnter={(e) => e.target.style.color = '#f87171'}
-                        onMouseLeave={(e) => e.target.style.color = 'var(--text-muted)'}
-                    >
-                        Disconnect
-                    </button>
-                </div>
-            </nav>
+        <div className="flex-1 flex flex-col" style={{ background: 'linear-gradient(145deg, var(--bg-primary), var(--bg-secondary))' }}>
 
             {/* Tabs */}
             <div className="shrink-0" style={{ borderBottom: '1px solid var(--border-glass)', background: 'rgba(255, 255, 255, 0.5)' }}>
