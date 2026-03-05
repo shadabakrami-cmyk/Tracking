@@ -93,7 +93,7 @@ export default function LandingScreen({ onSelect }) {
                             WebkitBackgroundClip: 'text',
                             WebkitTextFillColor: 'transparent',
                         }}>
-                        OceanioTracker
+                        Multi Tracker
                     </h1>
                     <p className="text-base" style={{ color: 'var(--text-secondary)' }}>
                         Choose a tracking service to get started

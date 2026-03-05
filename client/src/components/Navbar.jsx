@@ -61,7 +61,7 @@ export default function Navbar({ activeSection, onSectionChange, oceanAuth, carg
                             WebkitTextFillColor: 'transparent',
                             animation: 'fadeIn 0.2s ease-out',
                         }}>
-                        OceanioTracker
+                        Multi Tracker
                     </span>
                 )}
             </div>
