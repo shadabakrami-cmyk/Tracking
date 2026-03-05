@@ -638,7 +638,7 @@ function LeafletRouteMap({ leg, wide = false, fillParent = false }) {
                         <span style={{ color: T.textMuted }}>Historic Route</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <div style={{ width: 14, height: 2.5, background: T.future, borderRadius: 2, borderTop: `1px dashed ${T.future}` }} />
+                        <svg width="14" height="3" style={{ display: 'block' }}><line x1="0" y1="1.5" x2="14" y2="1.5" stroke={T.future} strokeWidth="2.5" strokeDasharray="4 2" /></svg>
                         <span style={{ color: T.textMuted }}>Predicted Route</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -743,7 +743,7 @@ function LeafletRouteMap({ leg, wide = false, fillParent = false }) {
                         <span style={{ color: T.textMuted }}>Historic Route</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <div style={{ width: 14, height: 2.5, background: T.future, borderRadius: 2, borderTop: `1px dashed ${T.future}` }} />
+                        <svg width="14" height="3" style={{ display: 'block' }}><line x1="0" y1="1.5" x2="14" y2="1.5" stroke={T.future} strokeWidth="2.5" strokeDasharray="4 2" /></svg>
                         <span style={{ color: T.textMuted }}>Predicted Route</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
