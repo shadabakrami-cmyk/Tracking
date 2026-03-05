@@ -61,7 +61,7 @@ export default function CargoAuthScreen({ onConnect }) {
                     </div>
                     <h1 className="text-3xl font-bold tracking-tight"
                         style={{ fontFamily: "'Outfit', sans-serif", background: 'var(--gradient-brand)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-                        Air Cargo Tracker
+                        Cargo AI
                     </h1>
                     <p className="text-sm mt-2" style={{ color: 'var(--text-secondary)' }}>
                         Enter your RapidAPI key to begin tracking

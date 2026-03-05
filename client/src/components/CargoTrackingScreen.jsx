@@ -102,6 +102,32 @@ export default function CargoTrackingScreen({ rapidApiKey }) {
     const shipment = Array.isArray(result) && result.length > 0 ? result[0] : null
     const events = shipment?.events || []
 
+    // Extract ordered route stops from flight events (origin → intermediate → destination)
+    function getRouteStops() {
+        if (!shipment) return []
+        const legs = []
+        const seen = new Set()
+        for (const evt of events) {
+            if (evt.flight && evt.flight.origin && evt.flight.destination) {
+                const key = `${evt.flight.origin}-${evt.flight.destination}`
+                if (!seen.has(key)) {
+                    seen.add(key)
+                    legs.push({ from: evt.flight.origin, to: evt.flight.destination })
+                }
+            }
+        }
+        if (legs.length === 0) return [shipment.origin, shipment.destination].filter(Boolean)
+        // Build ordered chain from legs
+        const stops = [legs[0].from]
+        for (const leg of legs) {
+            if (stops[stops.length - 1] !== leg.from) stops.push(leg.from)
+            stops.push(leg.to)
+        }
+        // Deduplicate consecutive
+        return stops.filter((s, i) => i === 0 || s !== stops[i - 1])
+    }
+    const routeStops = getRouteStops()
+
     // Build raw JSON with per-event highlighting
     function renderRawJson() {
         if (!result) return null
@@ -315,23 +341,37 @@ export default function CargoTrackingScreen({ rapidApiKey }) {
                                     })()}
                                 </div>
 
-                                {/* Route */}
-                                <div className="flex items-center gap-3 mb-4">
-                                    <div className="text-center">
-                                        <div className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>{shipment.origin}</div>
-                                        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Origin</div>
-                                    </div>
-                                    <div className="flex-1 flex items-center gap-2">
-                                        <div className="flex-1 h-px" style={{ background: 'var(--border-glass-hover)' }} />
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                            <path d="M17.8 19.2L16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z" />
-                                        </svg>
-                                        <div className="flex-1 h-px" style={{ background: 'var(--border-glass-hover)' }} />
-                                    </div>
-                                    <div className="text-center">
-                                        <div className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>{shipment.destination}</div>
-                                        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Destination</div>
-                                    </div>
+                                {/* Route with intermediate airports */}
+                                <div className="flex items-center gap-1 mb-4 flex-wrap">
+                                    {routeStops.map((stop, i) => {
+                                        const isFirst = i === 0
+                                        const isLast = i === routeStops.length - 1
+                                        const label = isFirst ? 'Origin' : isLast ? 'Destination' : 'Transit'
+                                        return (
+                                            <div key={i} className="flex items-center gap-1">
+                                                {/* Airplane + line connector before each stop (except first) */}
+                                                {i > 0 && (
+                                                    <div className="flex items-center gap-1" style={{ minWidth: '50px' }}>
+                                                        <div className="flex-1 h-px" style={{ background: 'var(--border-glass-hover)' }} />
+                                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                                                            <path d="M17.8 19.2L16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z" />
+                                                        </svg>
+                                                        <div className="flex-1 h-px" style={{ background: 'var(--border-glass-hover)' }} />
+                                                    </div>
+                                                )}
+                                                {/* Airport code */}
+                                                <div className="text-center shrink-0">
+                                                    <div className="font-bold" style={{
+                                                        color: 'var(--text-primary)',
+                                                        fontSize: isFirst || isLast ? '1.25rem' : '0.95rem',
+                                                    }}>{stop}</div>
+                                                    <div className="text-xs" style={{
+                                                        color: isFirst || isLast ? 'var(--text-muted)' : 'var(--accent-amber)',
+                                                    }}>{label}</div>
+                                                </div>
+                                            </div>
+                                        )
+                                    })}
                                 </div>
 
                                 {/* Stats Row */}
